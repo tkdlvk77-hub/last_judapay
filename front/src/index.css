@@ -1,0 +1,260 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-stack: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif,
+                'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji',
+                'Twemoji Mozilla', 'Segoe UI Symbol';
+  --vvh: 100vh; /* JS가 실행되기 전 안전한 fallback. visualViewport 리스너가 즉시 덮어씀 */
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body, button, input, textarea, select {
+  font-family: var(--font-stack);
+}
+
+/* 텍스트 입력/선택이 필요한 요소는 user-select 복원 */
+input, textarea, [contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── 풀스크린 높이 체인 ──
+   html → body → #root → App wrapper → phone-stage 까지
+   height: 100% 체인이 완전히 이어져야 Capacitor 환경에서
+   safe area / 탭바 / 하단 여백이 정확히 동작함 */
+html {
+  height: 100%;
+  background: #1A0F3C; /* 안전 영역(노치 뒤) 배경 — 앱 전체 통일 */
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  background: #1A0F3C; /* 모바일 safe area 여백 앱 배경색 */
+  overscroll-behavior: none;
+}
+
+#root {
+  display: flex;
+  justify-content: center;
+  /* ✅ min-height → height 로 변경: 자식의 height:100% 가 올바르게 해석됨 */
+  height: 100%;
+  height: 100dvh; /* dvh: Capacitor/PWA 풀스크린에서 가장 안정적 */
+}
+
+/* App 최상위 래퍼 — 현재 App.jsx에서 inline style로 관리 */
+
+.phone {
+  /* 데스크탑 프리뷰: 390px 고정 중앙 정렬 */
+  width: 390px;
+  height: 100vh;
+  height: 100svh;
+  background: #F4F6FB;
+  position: relative;
+  box-shadow: 0 0 60px rgba(0,0,0,0.15);
+  overflow: hidden;
+  overflow: clip;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── HomePersonal 처리필요항목 배지 애니메이션 ─────────────────
+   반드시 전역 CSS 에 있어야 컴포넌트 re-render 로 리셋되지 않음  */
+@keyframes p-pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.7; }
+  70%  { transform: scale(1.9); opacity: 0; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+@keyframes p-badge-beat {
+  0%,100% { transform: scale(1); }
+  30%     { transform: scale(1.12); }
+  60%     { transform: scale(0.96); }
+}
+.p-pulse-ring { animation: p-pulse-ring 1.8s ease-out infinite; }
+.p-badge-beat { animation: p-badge-beat 1.8s ease-in-out infinite; }
+
+/* ── 화면 전환 애니메이션 ───────────────────────────────────────────
+   enter: 오른쪽에서 슬라이드 인 (iOS native 스와이프 백과 충돌 없음)
+   exit : 애니메이션 없음 — iOS native allowsBackForwardNavigationGestures
+          가 활성화된 경우 iOS 가 WebView 전체를 슬라이드시키므로
+          JS 측 exit animation 이 있으면 두 애니메이션이 충돌 → freeze  */
+@keyframes screen-slide-in {
+  from { transform: translateX(100%); }
+}
+.screen-enter {
+  /* both: 첫 프레임 전에도 from 상태(100%) 유지 → 깜빡임 없음 */
+  animation: screen-slide-in 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+/* ── 모바일 / Capacitor: 좌우·상하 여백 없이 완전히 꽉 채움 ── */
+@media (max-width: 430px) {
+  .phone {
+    width: 100%;
+    box-shadow: none;
+    /* ✅ 100svh → 100% : html/body/#root 높이 체인에서 정확한 높이 상속
+       Capacitor WKWebView 에서 100svh 가 safe area 포함 여부가 기기마다 달라
+       부모 체인 height:100% 방식이 가장 안정적 */
+    height: 100%;
+    /* 투명: phone-stage(#1A0F3C 다크 퍼플) 가 노치·홈바 safe area 배경으로 노출 */
+    background: transparent;
+  }
+}
+
+/* flex 직계 자식이 content 높이로 팽창하는 것 방지 → BottomTab이 밀려나지 않음 */
+.phone > * {
+  min-height: 0;
+}
+
+/* 스크롤 컨테이너 최적화 */
+[style*="overflow-y: auto"],
+[style*="overflow-y:auto"],
+[style*="overflow: auto"],
+.scroll-area {
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  overscroll-behavior: contain; /* 경계 도달 시 탄성 효과 (부드러운 느낌) */
+}
+
+[style*="overflow-y: auto"]::-webkit-scrollbar,
+[style*="overflow-y:auto"]::-webkit-scrollbar,
+[style*="overflow: auto"]::-webkit-scrollbar,
+.scroll-area::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+.bottom-bar {
+  flex-shrink: 0;
+  padding: 12px 16px 20px;
+  background: #fff;
+  border-top: 1px solid #EEEFF2;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.06);
+}
+
+.hero-grad {
+  background: linear-gradient(160deg, #1A1240 0%, #2D1F6E 60%, #3D2090 100%);
+}
+
+.brand-grad {
+  background: linear-gradient(135deg, #5B4FE8, #9333EA);
+}
+
+.pin-dot {
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid #BABADA;
+  background: transparent;
+  transition: all 0.15s;
+}
+
+.pin-dot.filled {
+  background: #5B4FE8;
+  border-color: #5B4FE8;
+}
+
+/* ── 페이지 전환 무대 ── */
+.phone-stage {
+  /* 데스크탑 프리뷰: 390px 고정 */
+  position: relative;
+  width: 390px;
+  height: 100vh;
+  height: 100svh;
+  overflow: hidden;
+  flex-shrink: 0;
+  /* ✅ 전환 중 노출 배경: #F4F6FB(라벤더) → 흰 배경 플래시 방지 */
+  background: #F4F6FB;
+}
+
+@media (max-width: 430px) {
+  .phone-stage {
+    width: 100%;
+    /* ✅ 100svh → 100% : 높이 체인 상속으로 Capacitor 안정화 */
+    height: 100%;
+    /* 노치·홈바 safe area 영역 배경 — 앱과 동일 다크 퍼플 */
+    background: #1A0F3C;
+  }
+}
+
+/* BottomTab safe area — 홈 인디케이터 영역을 탭바 흰 배경으로 덮음 */
+.bottom-tab-safe {
+  padding-bottom: max(4px, env(safe-area-inset-bottom));
+}
+
+/* 키패드 / 화면 최하단 액션 영역 safe area — 홈 인디케이터 위로 떨어뜨림
+   safe-area 위에 추가로 28px 여유 — 홈 인디케이터·라운드 코너 와의 시각적 간격 확보 */
+.keypad-safe {
+  padding-bottom: calc(28px + env(safe-area-inset-bottom, 20px));
+}
+
+/* 페이지 최하단 버튼 (PIN 제외, 단순 다음 버튼 등) safe area */
+.bottom-action-safe {
+  padding-bottom: max(32px, calc(20px + env(safe-area-inset-bottom)));
+}
+
+/* GradientHeader safe area — 노치/Dynamic Island 영역까지 그라데이션 채움 */
+.gradient-header-safe {
+  padding-top: max(20px, env(safe-area-inset-top));
+}
+
+/* Sticky 네비 바 safe area — 컬랩스 헤더 화면 상단 배경이 노치까지 채워짐 */
+.sticky-nav-safe {
+  padding-top: max(20px, env(safe-area-inset-top)) !important;
+}
+
+/* Sticky 탭 바 safe area — 컬랩스 헤더 화면 탭 바 위치 */
+.sticky-tabs-safe {
+  top: max(66px, calc(46px + env(safe-area-inset-top))) !important;
+}
+
+/* ── iOS 스타일 화면 전환 애니메이션 ── */
+
+/* GPU 레이어 사전 확보 → 첫 프레임 끊김 방지 */
+.page-enter-right,
+.page-enter-left,
+.page-exit-right {
+  will-change: transform;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+@keyframes pageEnterRight {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0%); }
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 앞으로 진입: 오른쪽에서 슬라이드 인 */
+.page-enter-right {
+  animation: pageEnterRight 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+@keyframes pageEnterLeft {
+  from { transform: translateX(-30%); opacity: 0.6; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+/* 뒤로 올 때: 왼쪽에서 살짝 스며들기 */
+.page-enter-left {
+  animation: pageEnterLeft 0.26s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+@keyframes pageExitRight {
+  from { transform: translateX(0%); }
+  to   { transform: translateX(100%); }
+}
+/* 뒤로가기 시: 현재 화면이 오른쪽으로 슬라이드 아웃 */
+.page-exit-right {
+  animation: pageExitRight 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
