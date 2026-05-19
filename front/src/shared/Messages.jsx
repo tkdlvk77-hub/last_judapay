@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, Suspense, lazy } from 'react'
+import { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { usePullToRefresh } from '../hooks/usePullToRefresh'
 import BottomTab from '../components/BottomTab'
 import {
   PhoneShell, GradientHeader, PageTitle, Badge, FilterChips,
@@ -37,6 +38,17 @@ export default function Messages() {
   const { userType } = useUser()
   const currentUserId = getCurrentUserId(userType)
   const scrollRef = useRef(null)
+
+  // Pull-to-Refresh: 본문 스크롤 컨테이너에 적용
+  const handleRefresh = useCallback(async () => {
+    await new Promise(r => setTimeout(r, 900))
+    // TODO: services API 로 스레드 목록 재조회 연결
+  }, [])
+  const ptr = usePullToRefresh(handleRefresh)
+  const mergedScrollRef = useCallback((node) => {
+    scrollRef.current = node
+    ptr.containerRef.current = node
+  }, [ptr.containerRef])
 
   // _thread(내부) 또는 threadId(외부 진입) 초기값
   const initThread = location.state?._thread || location.state?.threadId || null
@@ -197,25 +209,31 @@ export default function Messages() {
   return (
     <PhoneShell>
 
-      {/* ── 목록 — 항상 마운트 (뒤로가기 시 re-mount 비용 없음) ── */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', background: '#F4F6FB' }}>
-
-        <GradientHeader paddingBottom="20px" bg={theme.headerGrad}>
-          <PageTitle
-            title="메시지"
-            badge={totalUnread}
-            right={<span style={{ fontSize:'11px', color:'rgba(255,255,255,0.65)' }}>거래 관계 {allThreads.length}명</span>}
-          />
-          <FilterChips dark value={filter} onChange={setFilter} items={filterItems} />
-          <div style={{ padding:'8px 16px 4px' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:'8px', background:'rgba(255,255,255,0.14)', borderRadius:'12px', padding:'9px 14px', border:'1px solid rgba(255,255,255,0.2)' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2.2" strokeLinecap="round">
-                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-              </svg>
-              <span style={{ fontSize:'12px', color:'rgba(255,255,255,0.5)' }}>이름, 거래 유형 검색...</span>
-            </div>
+      {/* ── 고정 헤더 (스크롤되지 않음) ── */}
+      <GradientHeader paddingBottom="20px" bg={theme.headerGrad}>
+        <PageTitle
+          title="메시지"
+          badge={totalUnread}
+          right={<span style={{ fontSize:'11px', color:'rgba(255,255,255,0.65)' }}>거래 관계 {allThreads.length}명</span>}
+        />
+        <FilterChips dark value={filter} onChange={setFilter} items={filterItems} />
+        <div style={{ padding:'8px 16px 4px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', background:'rgba(255,255,255,0.14)', borderRadius:'12px', padding:'9px 14px', border:'1px solid rgba(255,255,255,0.2)' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2.2" strokeLinecap="round">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <span style={{ fontSize:'12px', color:'rgba(255,255,255,0.5)' }}>이름, 거래 유형 검색...</span>
           </div>
-        </GradientHeader>
+        </div>
+      </GradientHeader>
+
+      {/* ── 스크롤 본문 + Pull-to-Refresh ── */}
+      <div ref={mergedScrollRef} style={{
+        flex: 1, overflowY: 'auto', position:'relative',
+        background: '#F4F6FB', overscrollBehavior:'contain',
+      }}>
+        {ptr.indicator}
+        <div style={ptr.contentStyle}>
 
         <div style={{ padding:'12px 12px 24px', background:'#F4F5F7', minHeight:'100%' }}>
           {filtered.length === 0 ? (
@@ -297,6 +315,8 @@ export default function Messages() {
               })}
             </div>
           )}
+        </div>
+
         </div>
       </div>
       <BottomTab />

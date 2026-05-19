@@ -176,7 +176,10 @@ export default function SecuritySettings() {
   return (
     <PhoneShell>
       <div ref={scrollRef} style={{ flex:1, overflowY:'auto' }}>
-        <DarkHeader onBack={() => navigate('/more')} />
+        <DarkHeader onBack={() => {
+          if ((window.history.state?.idx ?? 0) > 0) navigate(-1)
+          else navigate('/more', { replace: true })
+        }} />
 
         <div style={{ padding:'12px 16px 24px' }}>
 

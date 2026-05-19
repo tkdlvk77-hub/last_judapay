@@ -42,7 +42,10 @@ export default function SignupBusiness() {
   if (step === 1) return (
     <div className="phone flex flex-col" style={{ background:'#FAF8F5', paddingTop:'env(safe-area-inset-top)' }}>
       <Sbar />
-      <BackRow title="기업 가입" onBack={() => navigate('/')} />
+      <BackRow title="기업 가입" onBack={() => {
+        if ((window.history.state?.idx ?? 0) > 0) navigate(-1)
+        else navigate('/', { replace: true })
+      }} />
       <div style={{ padding:'0 24px', flex:1, overflowY:'auto' }}>
 
         <div style={{ textAlign:'right', fontSize:'11px', color:'#C8C5BE', marginBottom:'4px' }}>1/2</div>

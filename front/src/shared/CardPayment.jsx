@@ -104,7 +104,6 @@ function PhysicalCard({ card, paused, revealed, onDetailClick, palette }) {
   return (
     <div style={{
       background: cardGrad,
-      transition: 'background 0.4s ease',
       borderRadius: RADIUS.lg,
       padding: '20px',
       position: 'relative',
@@ -113,7 +112,7 @@ function PhysicalCard({ card, paused, revealed, onDetailClick, palette }) {
       minHeight: '196px',
       display: 'flex', flexDirection: 'column',
       opacity: paused ? 0.75 : 1,
-      transition: 'opacity .2s',
+      transition: 'background 0.4s ease, opacity 0.2s ease',
     }}>
       {/* 글로우 */}
       <div style={{ position:'absolute', top:'-40px', left:'-40px', width:'180px', height:'180px', background:`radial-gradient(circle, ${glowColor} 0%, transparent 70%)`, pointerEvents:'none' }} />

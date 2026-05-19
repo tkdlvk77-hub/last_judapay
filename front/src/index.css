@@ -82,18 +82,15 @@ body {
 .p-pulse-ring { animation: p-pulse-ring 1.8s ease-out infinite; }
 .p-badge-beat { animation: p-badge-beat 1.8s ease-in-out infinite; }
 
+/* ── Pull-to-Refresh 스피너 ───────────────────────────────── */
+@keyframes ptr-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── 화면 전환 애니메이션 ───────────────────────────────────────────
-   enter: 오른쪽에서 슬라이드 인 (iOS native 스와이프 백과 충돌 없음)
-   exit : 애니메이션 없음 — iOS native allowsBackForwardNavigationGestures
-          가 활성화된 경우 iOS 가 WebView 전체를 슬라이드시키므로
-          JS 측 exit animation 이 있으면 두 애니메이션이 충돌 → freeze  */
-@keyframes screen-slide-in {
-  from { transform: translateX(100%); }
-}
-.screen-enter {
-  /* both: 첫 프레임 전에도 from 상태(100%) 유지 → 깜빡임 없음 */
-  animation: screen-slide-in 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
-}
+   App.jsx 에서 인라인 style 의 transform + transition 으로 직접 제어한다.
+   enter: 오른쪽 100% → 0% / exit: 0% → 100%.
+   iOS native 셸은 swipe-back 충돌 방지 위해 App.jsx 에서 zIndex 분기로 차단. */
 
 /* ── 모바일 / Capacitor: 좌우·상하 여백 없이 완전히 꽉 채움 ── */
 @media (max-width: 430px) {

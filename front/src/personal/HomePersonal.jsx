@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useScrollRestore } from '../hooks/useScrollRestore'
+import { usePullToRefresh } from '../hooks/usePullToRefresh'
 import BottomTab from '../components/BottomTab'
 import {
   PhoneShell, GradientHeader, ProfileBadge, BalanceCard, CircleAction, AccountTransition,
@@ -90,6 +91,20 @@ export default function HomePersonal() {
     () => sessionStorage.getItem('home_todo_expanded') === 'true'
   )
 
+  // ── Pull-to-Refresh ─────────────────────────────────────────
+  // 데모: 실제 fetch 가 붙기 전까지는 약간의 지연으로 인디케이터 노출
+  const handleRefresh = useCallback(async () => {
+    await new Promise(r => setTimeout(r, 900))
+    // TODO: hydrate() 또는 services API 로 실데이터 새로고침 연결
+  }, [])
+  const ptr = usePullToRefresh(handleRefresh)
+
+  // useScrollRestore 와 usePullToRefresh 가 같은 div 를 가리키도록 ref 병합
+  const mergedRef = useCallback((node) => {
+    scrollRef.current = node
+    ptr.containerRef.current = node
+  }, [scrollRef, ptr.containerRef])
+
   // 기업 초대 수락 여부
   const [bizInviteAccepted] = useState(
     () => sessionStorage.getItem('bizInviteAccepted') === 'true'
@@ -109,56 +124,62 @@ export default function HomePersonal() {
 
   return (
     <PhoneShell>
-      <div ref={scrollRef} style={{ flex:1, overflowY:'auto' }}>
-
-        {/* ── 헤더 ── */}
-        <GradientHeader paddingBottom="16px">
-          <ProfileBadge
-            icon={<PersonalEmoji />}
-            accent="PERSONAL"
-            name="이호형"
-            sub={null}
-            onIconClick={bizInviteAccepted ? handleSwitchToBusiness : undefined}
-            iconBadge={bizInviteAccepted}
-            action={
-              LIVE_PAYMENTS.filter(p => p.status === 'blocked').length > 0 ? (
-                <button onClick={() => navigate('/payment-alerts')} style={{ display:'flex', alignItems:'center', gap:'5px', padding:'5px 11px', background:'rgba(239,68,68,0.25)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'20px', cursor:'pointer', fontFamily:'inherit' }}>
-                  <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#EF4444' }} />
-                  <span style={{ fontSize:'11px', fontWeight:700, color:'#FCA5A5' }}>
-                    이상 {LIVE_PAYMENTS.filter(p => p.status === 'blocked').length}건
-                  </span>
-                </button>
-              ) : null
-            }
-          />
-          <BalanceCard
-            label="출금 가능 잔액"
-            amount="1,250,000"
-            onClick={() => navigate('/wallet')}
-            sub={
-              <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
-                <span style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#34D399', display:'inline-block' }} />
-                받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>320,000원</strong>
-              </span>
-            }
-            secondary={
-              <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', color:'#34D399', fontWeight:600 }}>
-                <TrendIcon /> +3.2%
-              </span>
-            }
-            action={
-              <button style={{ background:'transparent', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.7)', padding:0 }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      {/* ── 고정 헤더 (스크롤되지 않음) ── */}
+      <GradientHeader paddingBottom="16px">
+        <ProfileBadge
+          icon={<PersonalEmoji />}
+          accent="PERSONAL"
+          name="이호형"
+          sub={null}
+          onIconClick={bizInviteAccepted ? handleSwitchToBusiness : undefined}
+          iconBadge={bizInviteAccepted}
+          action={
+            LIVE_PAYMENTS.filter(p => p.status === 'blocked').length > 0 ? (
+              <button onClick={() => navigate('/payment-alerts')} style={{ display:'flex', alignItems:'center', gap:'5px', padding:'5px 11px', background:'rgba(239,68,68,0.25)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'20px', cursor:'pointer', fontFamily:'inherit' }}>
+                <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#EF4444' }} />
+                <span style={{ fontSize:'11px', fontWeight:700, color:'#FCA5A5' }}>
+                  이상 {LIVE_PAYMENTS.filter(p => p.status === 'blocked').length}건
+                </span>
               </button>
-            }
-          />
-          <div style={{ display:'flex', justifyContent:'space-around', padding:'14px 24px 4px' }}>
-            <CircleAction icon={<PlusIcon />} label="충전" onClick={() => navigate('/charge')} />
-            <CircleAction icon={<ZapIcon />} label="지급집행" active onClick={() => navigate('/execute')} />
-            <CircleAction icon={<CardIcon />} label="카드결제" onClick={() => navigate('/card-payment')} />
-            <CircleAction icon={<ArrowIcon />} label="출금" onClick={() => navigate('/withdraw')} />
-          </div>
-        </GradientHeader>
+            ) : null
+          }
+        />
+        <BalanceCard
+          label="출금 가능 잔액"
+          amount="1,250,000"
+          onClick={() => navigate('/wallet')}
+          sub={
+            <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
+              <span style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#34D399', display:'inline-block' }} />
+              받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>320,000원</strong>
+            </span>
+          }
+          secondary={
+            <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', color:'#34D399', fontWeight:600 }}>
+              <TrendIcon /> +3.2%
+            </span>
+          }
+          action={
+            <button style={{ background:'transparent', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.7)', padding:0 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          }
+        />
+        <div style={{ display:'flex', justifyContent:'space-around', padding:'14px 24px 4px' }}>
+          <CircleAction icon={<PlusIcon />} label="충전" onClick={() => navigate('/charge')} />
+          <CircleAction icon={<ZapIcon />} label="지급집행" active onClick={() => navigate('/execute')} />
+          <CircleAction icon={<CardIcon />} label="카드결제" onClick={() => navigate('/card-payment')} />
+          <CircleAction icon={<ArrowIcon />} label="출금" onClick={() => navigate('/withdraw')} />
+        </div>
+      </GradientHeader>
+
+      {/* ── 스크롤 본문 + Pull-to-Refresh ── */}
+      <div ref={mergedRef} style={{
+        flex:1, overflowY:'auto', position:'relative',
+        overscrollBehavior:'contain',
+      }}>
+        {ptr.indicator}
+        <div style={ptr.contentStyle}>
 
         {/* ── 콘텐츠 ── */}
         {/* p-pulse-ring / p-badge-beat 키프레임은 index.css 에 전역 선언됨
@@ -315,6 +336,7 @@ export default function HomePersonal() {
             })}
           </div>
 
+        </div>
         </div>
       </div>
       <BottomTab />
