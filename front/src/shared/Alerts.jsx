@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useScrollRestore } from '../hooks/useScrollRestore'
+import { usePullToRefresh } from '../hooks/usePullToRefresh'
 import BottomTab from '../components/BottomTab'
 import {
   PhoneShell, GradientHeader, Card, FilterChips,
@@ -385,6 +386,18 @@ export default function Alerts() {
   const { userType } = useUser()
   const currentUserId = getCurrentUserId(userType)
   const scrollRef = useScrollRestore()
+
+  // Pull-to-Refresh
+  const handleRefresh = useCallback(async () => {
+    await new Promise(r => setTimeout(r, 900))
+    // TODO: services API 로 알림 목록 재조회 연결
+  }, [])
+  const ptr = usePullToRefresh(handleRefresh)
+  const mergedScrollRef = useCallback((node) => {
+    scrollRef.current = node
+    ptr.containerRef.current = node
+  }, [scrollRef, ptr.containerRef])
+
   const [mainTab, setMainTab] = useState('transactions') // 'transactions' | 'system'
   const [roleFilter, setRoleFilter] = useState('all')
 
@@ -564,10 +577,9 @@ export default function Alerts() {
 
   return (
     <PhoneShell>
-      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', background: '#F4F6FB' }}>
 
-        {/* 다크 그라데이션 헤더 */}
-        <GradientHeader paddingBottom="16px" bg={theme.headerGrad}>
+      {/* 다크 그라데이션 헤더 — 고정 */}
+      <GradientHeader paddingBottom="16px" bg={theme.headerGrad}>
           <div style={{ padding:'4px 20px 18px' }}>
             <div style={{ fontSize:'24px', fontWeight:700, color:'#fff', letterSpacing:'-0.5px', marginBottom:'4px' }}>
               알림
@@ -642,7 +654,15 @@ export default function Alerts() {
               ]}
             />
           )}
-        </GradientHeader>
+      </GradientHeader>
+
+      {/* 스크롤 본문 + Pull-to-Refresh */}
+      <div ref={mergedScrollRef} style={{
+        flex: 1, overflowY: 'auto', position:'relative',
+        background: '#F4F6FB', overscrollBehavior:'contain',
+      }}>
+        {ptr.indicator}
+        <div style={ptr.contentStyle}>
 
         {/* 라이트 영역 — 카드 리스트 */}
         <div style={{ padding:'18px 16px 24px' }}>
@@ -968,6 +988,8 @@ export default function Alerts() {
               </div>
             )
           )}
+
+        </div>
 
         </div>
       </div>

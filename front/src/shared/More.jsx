@@ -149,10 +149,9 @@ export default function More() {
 
   return (
     <PhoneShell>
-      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', background: '#F4F6FB' }}>
 
-        {/* 다크 그라데이션 헤더 */}
-        <GradientHeader paddingBottom="20px" bg={theme.headerGrad}>
+      {/* 다크 그라데이션 헤더 — 고정 */}
+      <GradientHeader paddingBottom="20px" bg={theme.headerGrad}>
           <div style={{ padding:'4px 20px 18px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
             <div style={{ fontSize:'24px', fontWeight:700, color:'#fff', letterSpacing:'-0.5px' }}>
               더보기
@@ -223,7 +222,13 @@ export default function More() {
               <span style={{ color:'rgba(255,255,255,0.5)', fontSize:'16px', flexShrink:0 }}>›</span>
             </button>
           </div>
-        </GradientHeader>
+      </GradientHeader>
+
+      {/* 스크롤 본문 (refresh 없음) */}
+      <div ref={scrollRef} style={{
+        flex: 1, overflowY: 'auto',
+        background: '#F4F6FB', overscrollBehavior:'contain',
+      }}>
 
         {/* 라이트 영역 — 섹션들 */}
         <div style={{ padding:'4px 16px 24px' }}>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStatusBarStyle } from '../../native/useStatusBarStyle'
+import { useGoBack } from '../../hooks/useGoBack'
 
 const S = { // 인라인 스타일 공통
   sbar: { display:'flex', justifyContent:'space-between', padding:'14px 22px 6px', fontSize:'12px', fontWeight:'600', color:'#111' },
@@ -34,12 +35,11 @@ export default function SignupPersonal() {
   // cream 배경 화면 — 상태바 글자 검정
   useStatusBarStyle('dark')
 
-  // 백 버튼: 가능하면 popstate(=뒤로) 호출 → App.jsx 가 올바른 방향으로 전환
-  // wizard 중간 단계면 이전 단계로, 첫 단계면 라우트 백
+  // 백 버튼: 위저드 중간 단계면 이전 단계로, 첫 단계면 라우트 백
+  const goBack = useGoBack('/')
   const handleBack = () => {
     if (step > 1) { setStep(step - 1); return }
-    if ((window.history.state?.idx ?? 0) > 0) navigate(-1)
-    else navigate('/', { replace: true })
+    goBack()
   }
 
   const doAuth = () => {

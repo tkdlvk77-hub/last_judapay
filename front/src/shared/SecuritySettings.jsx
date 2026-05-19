@@ -5,6 +5,7 @@ import { COLORS, RADIUS, SHADOWS } from '../design/tokens'
 import { getAccountTheme } from '../design/accountTokens'
 import { useT } from '../design/i18n'
 import { useScrollRestore } from '../hooks/useScrollRestore'
+import { useGoBack } from '../hooks/useGoBack'
 import { dialog } from '../components/Dialog'
 
 // 로그인된 기기 (데모)
@@ -144,6 +145,7 @@ export default function SecuritySettings() {
   const theme = getAccountTheme()
   const t = useT()
   const navigate = useNavigate()
+  const goBack = useGoBack('/more')
   const scrollRef = useScrollRestore()
   const [faceID, setFaceID] = useState(true)
   const [autoLock, setAutoLock] = useState(60) // 1분
@@ -176,10 +178,7 @@ export default function SecuritySettings() {
   return (
     <PhoneShell>
       <div ref={scrollRef} style={{ flex:1, overflowY:'auto' }}>
-        <DarkHeader onBack={() => {
-          if ((window.history.state?.idx ?? 0) > 0) navigate(-1)
-          else navigate('/more', { replace: true })
-        }} />
+        <DarkHeader onBack={goBack} />
 
         <div style={{ padding:'12px 16px 24px' }}>
 

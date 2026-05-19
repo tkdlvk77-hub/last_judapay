@@ -50,7 +50,10 @@ export default function App() {
 
     if (currPath === prevPath) return // wall / sentinel 팝 무시
 
-    if (navType === 'POP') {
+    // POP 또는 useGoBack 이 보낸 __back 마커가 있으면 뒤로가기로 처리
+    const isBack = navType === 'POP' || !!location.state?.__back
+
+    if (isBack) {
       // ── 뒤로가기 ─────────────────────────────────────────────
       // 현재 top 화면을 'exiting' 으로 마크 → 슬라이드 아웃 후 unmount
       setStack(prev => {
