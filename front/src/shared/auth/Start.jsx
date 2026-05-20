@@ -36,14 +36,20 @@ export default function Start() {
       background: fullBg,
       fontFamily: 'inherit',
       position: 'relative',
+      // ✅ 화면 높이에 정확히 fit + 스크롤 차단 (모든 기기 대응)
+      height: '100dvh',
+      maxHeight: '100dvh',
       overflow: 'hidden',
+      overflowY: 'hidden',
     }}>
 
-      {/* 히어로 영역 — 세로 중앙 정렬 */}
+      {/* 히어로 영역 — 세로 중앙 정렬 (작은 화면에서는 자동으로 축소) */}
       <div style={{
         flex: 1,
+        minHeight: 0,
         display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
-        padding: '0 32px 32px',
+        padding: '0 32px 24px',
+        overflow: 'hidden',
       }}>
         {/* 로고 아이콘 */}
         <div style={{
@@ -73,11 +79,11 @@ export default function Start() {
           JUDAPAY
         </div>
 
-        {/* 메인 카피 */}
+        {/* 메인 카피 — 작은 화면에서 자동 축소 */}
         <div style={{
-          fontSize: '34px', fontWeight: 800,
+          fontSize: 'clamp(26px, 8vw, 34px)', fontWeight: 800,
           color: '#fff',
-          lineHeight: 1.25,
+          lineHeight: 1.22,
           letterSpacing: '-1px',
           marginBottom: '8px',
         }}>
@@ -103,8 +109,8 @@ export default function Start() {
         </div>
       </div>
 
-      {/* 버튼 영역 */}
-      <div style={{ padding: '0 24px 16px' }}>
+      {/* 버튼 영역 — 절대 축소되지 않음 */}
+      <div style={{ padding: '0 24px 12px', flexShrink: 0 }}>
 
         {/* 개인으로 시작 */}
         <button
@@ -183,14 +189,15 @@ export default function Start() {
         </div>
       </div>
 
-      {/* 약관 */}
+      {/* 약관 — 절대 축소되지 않음 */}
       <div style={{
         padding: '0 24px',
-        paddingBottom: 'max(32px, env(safe-area-inset-bottom))',
+        paddingBottom: 'max(20px, env(safe-area-inset-bottom))',
         textAlign: 'center',
         fontSize: '10px',
         color: 'rgba(255,255,255,0.25)',
         lineHeight: 1.7,
+        flexShrink: 0,
       }}>
         계속 진행하면{' '}
         <span style={{ color: theme.brandLight || theme.brand }}>이용약관</span>
