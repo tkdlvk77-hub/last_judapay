@@ -1,10 +1,13 @@
-// ─────────────────────────────────────────────────────────────
-// 앱 부팅 시점에 서버에서 최근 데이터를 끌어와 transactionStore 시드.
-//   - 토큰 없으면 (데모 모드) no-op
-//   - 호출 실패는 경고만, UX 차단 X
-//   - 결과는 ingestServer* 함수로 store 에 주입 → selector 들이 자동 리렌더
-// ─────────────────────────────────────────────────────────────
-import { api, tokens } from './api'
+// ─────────────────────────────────────────────────────────
+// hydrate.js — 부팅 시 서버에서 데이터 끌어와 store 시드
+//
+// 현재 서버에 존재하는 도메인:
+//   ✅ /api/v1/app/payments        (결제 리스트 — transactions/feed 대응)
+//   ❌ wallets / alerts / messages — 서버 미구현 → 데모 데이터 유지
+//
+// 로그인 안 된 상태 (쿠키 없음): no-op → UI 는 데모 데이터로 동작
+// ─────────────────────────────────────────────────────────
+import { api, session } from './api'
 import {
   ingestServerTransactions,
   ingestServerAlerts,
@@ -12,38 +15,32 @@ import {
 } from '../shared/transactionStore'
 
 export async function hydrate() {
-  if (!tokens.access) return
-  const userId = tokens.user?.userId
+  // 로그인 안 됐으면 (로컬에 user 없음) skip — 데모 모드
+  if (!session.user) return
+
+  const userId = session.user?.userId
+
   try {
-    const [wallets, feed, alerts, threads] = await Promise.allSettled([
-      api.get('/api/wallets'),
-      api.get('/api/transactions/feed?page=0&size=50'),
-      api.get('/api/alerts?tab=all&limit=50'),
-      api.get('/api/messages/threads'),
-    ])
-
-    // 1) 지갑 — 별도 store 가 없으므로 window 에 보관 (필요한 컴포넌트가 직접 꺼내 씀)
-    if (wallets.status === 'fulfilled') {
-      window.__judapay_wallets = wallets.value
-    }
-
-    // 2) 거래 피드 → _transactions + _activities 채움
-    if (feed.status === 'fulfilled') {
-      const content = feed.value?.content || feed.value || []
+    // ── 결제(거래) 피드 — 서버 구현된 유일한 도메인
+    try {
+      const payments = await api.get('/api/v1/app/payments?page=0&size=50')
+      const content  = payments?.content || payments || []
       ingestServerTransactions(content)
+    } catch (e) {
+      console.warn('[hydrate] payments failed:', e?.message)
     }
 
-    // 3) 알림 → _alerts 채움
-    if (alerts.status === 'fulfilled') {
-      const items = alerts.value?.items || []
-      ingestServerAlerts(items, userId)
-    }
-
-    // 4) 메시지 스레드 → _messages 채움
-    if (threads.status === 'fulfilled') {
-      const list = Array.isArray(threads.value) ? threads.value : (threads.value?.items || [])
-      ingestServerMessageThreads(list, userId)
-    }
+    // ── wallets / alerts / messages — 서버 미구현
+    //    추후 서버에 추가되면 아래 주석 해제하여 매핑
+    //
+    //   const wallets = await api.get('/api/v1/app/wallets')
+    //   window.__judapay_wallets = wallets
+    //
+    //   const alerts = await api.get('/api/v1/app/alerts?tab=all&limit=50')
+    //   ingestServerAlerts(alerts?.items || [], userId)
+    //
+    //   const threads = await api.get('/api/v1/app/messages/threads')
+    //   ingestServerMessageThreads(Array.isArray(threads) ? threads : (threads?.items || []), userId)
 
     window.dispatchEvent(new CustomEvent('judapay:hydrated', { detail: { ok: true } }))
   } catch (e) {

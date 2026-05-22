@@ -13,6 +13,11 @@ const TAB_PATHS = new Set([
   '/home', '/home-business', '/messages', '/alerts', '/more', '/business-menu',
 ])
 
+// 진입 애니메이션 없이 즉시 표시할 화면들 (스택 리셋 + phase 'idle')
+//   - '/' (Start) : 첫 시작 화면이므로 슬라이드 인 없이 즉시 노출
+//   - TAB_PATHS   : 하단 탭은 push가 아니라 root 전환 개념
+const RESET_PATHS = new Set(['/', ...TAB_PATHS])
+
 // iOS native 셸은 swipe-back 시 WebView 전체를 슬라이드시키는 native
 // 애니메이션을 담당하므로 JS 측 exit 애니메이션을 추가로 걸면 충돌 → freeze.
 const IS_IOS_SHELL =
@@ -69,9 +74,10 @@ export default function App() {
       })
     } else {
       // ── PUSH / REPLACE ───────────────────────────────────────
-      const isTab = TAB_PATHS.has(currPath)
+      const isReset = RESET_PATHS.has(currPath)
       setStack(prev => {
-        if (isTab) {
+        if (isReset) {
+          // Start('/') 또는 탭 화면: 스택 비우고 idle 로 — 진입 애니메이션 없음
           return [{ key: location.key, loc: location, phase: 'idle' }]
         }
         return [

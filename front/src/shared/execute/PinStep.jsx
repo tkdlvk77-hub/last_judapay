@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS, GRADIENTS } from '../../design/tokens'
 import { useT } from '../../design/i18n'
 import { getAccountTheme } from '../../design/accountTokens'
+import { bridgeAvailable, hasStoredPin, stepUpWithBio } from '../../services/biometric'
 
 const KEYS = [1,2,3,4,5,6,7,8,9,null,0,'del']
 
@@ -34,6 +35,23 @@ export default function PinStep({
   const theme = getAccountTheme()
   const [pin, setPin] = useState('')
   const [showExitModal, setShowExitModal] = useState(false)
+
+  // Face ID 사용 가능 + Keychain 에 PIN 저장되어 있을 때만 버튼 자동 노출
+  const [bioAvail, setBioAvail] = useState(false)
+  useEffect(() => {
+    if (!bridgeAvailable()) return
+    hasStoredPin().then(setBioAvail)
+  }, [])
+
+  /** Face ID 자동 step-up — Keychain PIN 해제 → 서버 step-up → 성공 시 onComplete */
+  const handleFaceIdDefault = async () => {
+    try {
+      await stepUpWithBio({ reason: '자금 집행 인증' })
+      onComplete?.()   // 자금집행 화면이 자금집행 API 호출
+    } catch (e) {
+      // 사용자 취소 또는 서버 거부 — 그냥 PIN 입력으로 계속 진행하면 됨
+    }
+  }
 
   // ── [안전 가드] 기업 사용자 중 집행 권한 없는 역할 차단 ─────
   // viewer / manager 가 직접 URL로 접근 시에도 PIN 입력 불가
@@ -70,7 +88,8 @@ export default function PinStep({
       if (next.length === 6) {
         setTimeout(() => {
           setPin('')
-          onComplete?.()
+          // onComplete 콜백에 입력한 PIN 도 넘김 — 호출자가 step-up + 자금집행 처리
+          onComplete?.(next)
         }, 400)
       }
       return next
@@ -167,9 +186,9 @@ export default function PinStep({
             ))}
           </div>
 
-          {/* Face ID */}
-          {onFaceID && (
-            <button onClick={onFaceID}
+          {/* Face ID — 명시적 onFaceID 가 있거나, 네이티브 셸 + Keychain 저장 PIN 있으면 자동 노출 */}
+          {(onFaceID || bioAvail) && (
+            <button onClick={onFaceID || handleFaceIdDefault}
               style={{
                 background:'none', border:'none',
                 display:'flex', alignItems:'center', gap:'5px',
