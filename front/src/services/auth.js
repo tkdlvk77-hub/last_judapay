@@ -38,20 +38,36 @@ export async function verifyIdentity(req) {
 
 /**
  * PIN 로그인 — 본인인증으로 받은 ci + PIN 6자리
+ *
+ * 응답 분기:
+ *   - 정상    : { userId, userType, role, name, email }  → session 저장
+ *   - 추가인증: { requiresStepUp: true, reason: 'NEW_DEVICE' | 'RISKY_LOGIN' }
+ *               → session 저장하지 않음. 호출자가 PIN 재입력 또는 step-up 화면으로 안내.
  *  @param {{ci, pin}} req
  */
 export async function loginPin(req) {
   const res = await api.post('/api/v1/app/auth/login-pin', req)
+  if (res?.requiresStepUp) {
+    // 토큰 미발급 상태 — session 저장 금지
+    return res
+  }
   session.setUser(res)
   return res
 }
 
 /**
- * 로그아웃 — 서버가 만료 쿠키 발급 + 로컬 세션 정리
+ * 로그아웃
+ *   1) 서버에 logout 호출 → jp_app_token / jp_app_stepup 만료 쿠키 발급
+ *   2) 로컬 session 정리
+ *   3) (네이티브 셸) Keychain 의 PIN 도 함께 삭제 — 분실/도난 시 잔여 인증 정보 제거
  */
 export async function logout() {
   try { await api.post('/api/v1/app/auth/logout', {}) } catch {}
   session.clear()
+  try {
+    const { clearStoredPin } = await import('./biometric')
+    await clearStoredPin()
+  } catch {}
 }
 
 // 호환용: 기존 화면이 직접 sessionStorage 의 bizType 을 읽고 있음

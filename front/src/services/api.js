@@ -80,22 +80,42 @@ export async function apiFetch(path, { method = 'GET', headers, body, signal } =
     signal,
   })
 
-  // 인증 만료 → 단순 로그아웃 + 시작 화면으로
-  if (res.status === 401 || res.status === 403) {
-    session.clear()
-    if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/')) {
-      // 라우트가 깊이 들어가 있을 때만 리다이렉트 (Start 화면에서의 무한 루프 방지)
-      const isPublic = ['/', '/login', '/signup/personal', '/signup/business', '/signup/pin']
-        .includes(window.location.pathname)
-      if (!isPublic) window.location.assign('/')
-    }
-  }
-
+  // ── 에러 응답 처리 ──────────────────────────────────────
+  // 401/403 라도 모두 "토큰 만료" 가 아니다. PIN 오류 / MFA 미통과 등은
+  // 사용자 입력 실수이므로 세션을 날리거나 시작 화면으로 보내면 안 된다.
+  // 응답 본문의 error.code 를 먼저 보고 분기한다.
   if (!res.ok) {
     let errBody = null
     try { errBody = await res.json() } catch {}
-    const e = new Error(errBody?.message || errBody?.error?.message || `HTTP ${res.status}`)
-    e.code = errBody?.code || errBody?.error?.code
+    const code    = errBody?.code || errBody?.error?.code
+    const message = errBody?.message || errBody?.error?.message || ''
+
+    // 비-토큰 인증 오류: PIN 불일치 / MFA 미통과 / OTP 등 — 세션 유지
+    const CREDENTIAL_CODES = new Set([
+      'INVALID_CREDENTIALS', 'PIN_MISMATCH', 'OTP_MISMATCH',
+      'MFA_REQUIRED', 'ACCOUNT_LOCKED', 'RATE_LIMITED',
+    ])
+    // 서버가 PIN 오류도 AUTH_TOKEN_INVALID 로 묶어 보내는 경우 메시지로 감지
+    const looksLikeCredentialError =
+      code === 'AUTH_TOKEN_INVALID' &&
+      /PIN|비밀번호|password|인증번호|OTP/i.test(message)
+
+    const shouldRedirect =
+      (res.status === 401 || res.status === 403) &&
+      !CREDENTIAL_CODES.has(code) &&
+      !looksLikeCredentialError
+
+    if (shouldRedirect) {
+      session.clear()
+      if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/')) {
+        const isPublic = ['/', '/login', '/signup/personal', '/signup/business', '/signup/pin']
+          .includes(window.location.pathname)
+        if (!isPublic) window.location.assign('/')
+      }
+    }
+
+    const e = new Error(message || `HTTP ${res.status}`)
+    e.code = code
     e.status = res.status
     e.body = errBody
     throw e

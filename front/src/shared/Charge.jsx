@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../design/tokens'
@@ -6,14 +6,40 @@ import { getAccountTheme } from '../design/accountTokens'
 import { useT } from '../design/i18n'
 import { useScrollRestore } from '../hooks/useScrollRestore'
 import { useStepHistory } from '../hooks/useStepHistory'
+import { api } from '../services/api'
+import { getWalletSummary, chargeWallet } from '../services/wallet'
+import { stepUpWithPin } from '../services/biometric'
+import { dialog } from '../components/Dialog'
+import { hydrateHome } from '../services/hydrate'
 
-const ACCOUNTS = [
-  { id:0, bank:'국민은행', bankCode:'KB', bankColor:'#F9C906', num:'123-**-456', name:'이호형', primary:true },
-  { id:1, bank:'농협은행', bankCode:'NH', bankColor:'#1DA462', num:'789-**-012', name:'이호형', primary:false },
+// 데모 폴백 (서버 me 응답 전 잠시 보여줄 용도) — 실제로는 로그인 후 /me 에서 받음
+const DEMO_ACCOUNTS = [
+  { id:'demo', bank:'국민은행', bankCode:'KB', bankColor:'#F9C906', num:'***-**-****', name:'사용자', primary:true },
 ]
 
+// 은행코드 → 표시명/색상 (서버 응답은 ISO 코드 '004'/'088' 같은 형태)
+const BANK_META = {
+  '004': { bank:'KB국민은행',  short:'KB', color:'#F9C906' },
+  '088': { bank:'신한은행',    short:'신한', color:'#0048A3' },
+  '020': { bank:'우리은행',    short:'우리', color:'#1968B1' },
+  '081': { bank:'KEB하나은행', short:'하나', color:'#008587' },
+  '003': { bank:'기업은행',    short:'IBK', color:'#00386A' },
+  '011': { bank:'NH농협',      short:'NH', color:'#1DA462' },
+  '090': { bank:'카카오뱅크',  short:'kakao', color:'#FEE500' },
+  '089': { bank:'케이뱅크',    short:'K', color:'#3D2C7E' },
+  '092': { bank:'토스뱅크',    short:'toss', color:'#0064FF' },
+}
+function bankMeta(code) {
+  return BANK_META[code] || { bank: code, short: code, color:'#9CA3AF' }
+}
+function maskAccountTail(acc) {
+  if (!acc) return '***-**-****'
+  const tail = acc.slice(-4)
+  const head = acc.slice(0, 3)
+  return `${head}-**-${tail}`
+}
+
 const KEYS = [1,2,3,4,5,6,7,8,9,null,0,'del']
-const MY_BALANCE = 1932000
 const QUICK_AMOUNTS = [10000, 50000, 100000, 500000]
 
 function fmt(n) { return n ? Number(n).toLocaleString('ko-KR') : '0' }
@@ -53,29 +79,119 @@ export default function Charge() {
   const [selectedAcc, setSelectedAcc] = useState(0)
   const [pin, setPin] = useState('')
 
+  // ── 서버 데이터 ──────────────────────────────────────────
+  const [accounts, setAccounts] = useState(DEMO_ACCOUNTS)
+  const [myBalance, setMyBalance] = useState(0)
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+  const [completedTxId, setCompletedTxId] = useState(null)
+
+  // 출금계좌(서버 /me) + 잔액(서버 /wallets/summary) 동시 fetch
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [me, summary] = await Promise.allSettled([
+          api.get('/api/v1/app/me'),
+          getWalletSummary(),
+        ])
+        if (cancelled) return
+        if (me.status === 'fulfilled' && me.value?.bankAccount) {
+          const a = me.value.bankAccount
+          const meta = bankMeta(a.bankCode)
+          setAccounts([{
+            id:        a.bankCode + ':' + a.bankAccount,
+            bankCode:  a.bankCode,
+            bankAccount: a.bankAccount,
+            bank:      meta.bank,
+            bankShort: meta.short,
+            bankColor: meta.color,
+            num:       maskAccountTail(a.bankAccount),
+            name:      a.holderName || me.value.name || '사용자',
+            primary:   !!a.primary,
+          }])
+        }
+        if (summary.status === 'fulfilled' && summary.value?.available != null) {
+          setMyBalance(summary.value.available)
+        }
+      } catch (e) {
+        console.warn('[Charge] init fetch failed', e?.message)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
   const amtNum = parseInt(amount) || 0
   const amtFmt = fmt(amtNum)
-  const acc = ACCOUNTS[selectedAcc]
+  const acc = accounts[selectedAcc] || accounts[0]
 
   const addAmount = (v) => setAmount(String(amtNum + v))
 
+  /** PIN 6자리 완성 → step-up + charge 호출 */
+  const submitCharge = async (finalPin) => {
+    if (!acc?.bankCode || !acc?.bankAccount) {
+      dialog.alert({ title: '충전 불가', message: '등록된 출금 계좌가 없습니다.' })
+      setErrorMsg('등록된 출금 계좌가 없습니다.')
+      return
+    }
+    setSubmitting(true)
+    setErrorMsg(null)
+    try {
+      // 1) step-up — jp_app_stepup 쿠키 발급 (5분 TTL)
+      await stepUpWithPin(finalPin)
+      // 2) 충전 — Idempotency-Key 로 중복 방어
+      const result = await chargeWallet({
+        amount:      amtNum,
+        bankCode:    acc.bankCode,
+        bankAccount: acc.bankAccount,
+        idempotencyKey: 'charge-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+      })
+      setMyBalance(result.available ?? (myBalance + amtNum))
+      setCompletedTxId(result.transactionId)
+      setStep('done')
+      // 홈에 머물러있는 컴포넌트가 잔액/결제 목록을 갱신할 수 있도록 트리거
+      // hydrateHome 내부에서 'judapay:home-hydrated' 이벤트가 발행됨
+      hydrateHome().catch(() => {})
+    } catch (e) {
+      const msg = e?.message || '충전에 실패했습니다.'
+      // 서버에서 내려온 메시지로 alert + 화면 내 빨간 박스 동시 표시
+      // (PIN 오류, MFA 실패, 잠금, rate limit 등 모두 여기서 사용자에게 명확히 안내)
+      const isPinError = /PIN|비밀번호/i.test(msg)
+      dialog.alert({
+        title: isPinError ? 'PIN 오류' : '충전 실패',
+        message: msg,
+      })
+      setErrorMsg(msg)
+      setPin('')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const pinInput = (k) => {
-    if (k === 'del') { setPin(p => p.slice(0, -1)); return }
+    if (submitting) return
+    if (k === 'del') { setPin(p => p.slice(0, -1)); setErrorMsg(null); return }
     if (k === null) return
     if (pin.length >= 6) return
     const next = pin + k
     setPin(next)
-    if (next.length === 6) setTimeout(() => { setPin(''); setStep('done') }, 380)
+    if (next.length === 6) {
+      // 살짝 지연 — UX 적으로 6번째 점이 차오르는 게 보이도록
+      setTimeout(() => submitCharge(next), 200)
+    }
   }
 
   const goBack = () => {
     if (step === 'main') navigate(-1)
     else if (step === 'confirm') setStep('main')
-    else if (step === 'pin') setStep('confirm')
+    else if (step === 'pin') { setPin(''); setErrorMsg(null); setStep('confirm') }
   }
   useStepHistory(goBack, step === 'main')
 
-  const amountFontSize = amount.length <= 5 ? 46 : amount.length <= 7 ? 38 : amount.length <= 9 ? 30 : 24
+  // 입력 박스에 보여줄 콤마 포함 문자열 (예: "750,000"). state amount 는 항상 순수 숫자 문자열.
+  const displayAmount = amount ? Number(amount).toLocaleString('ko-KR') : ''
+  // 폰트 크기는 콤마 포함 길이 기준으로 계산 (콤마 들어가면 1~2자리 더 늘어남)
+  const amountFontSize = displayAmount.length <= 5 ? 46 : displayAmount.length <= 7 ? 38 : displayAmount.length <= 9 ? 30 : 24
 
   // ══════════════════════════════════════════════
   // STEP 1 — 금액 입력
@@ -109,16 +225,22 @@ export default function Charge() {
               gap:'6px', marginBottom:'10px', minHeight:'58px',
             }}>
               <input
-                type="number" inputMode="numeric"
-                value={amount}
-                onChange={e => setAmount(e.target.value.replace(/^0+/, ''))}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9,]*"
+                value={displayAmount}
+                onChange={e => {
+                  // 숫자만 추출 → state 는 항상 순수 숫자 문자열
+                  const raw = e.target.value.replace(/[^0-9]/g, '').replace(/^0+/, '')
+                  setAmount(raw)
+                }}
                 placeholder="0"
                 style={{
                   fontSize:`${amountFontSize}px`, fontWeight:700,
                   color: amount ? '#111827' : '#D1D5DB',
                   background:'transparent', border:'none', outline:'none',
                   textAlign:'right', fontFamily:'inherit',
-                  width: Math.max(48, (amount.length || 1) * (amountFontSize * 0.6)) + 'px',
+                  width: Math.max(48, (displayAmount.length || 1) * (amountFontSize * 0.6)) + 'px',
                   transition:'font-size 0.1s, width 0.1s',
                   WebkitAppearance:'none', MozAppearance:'textfield',
                   letterSpacing:'-1.5px',
@@ -147,7 +269,7 @@ export default function Charge() {
             <div style={{ textAlign:'center', marginBottom:'20px' }}>
               <span style={{ fontSize:'12px', color:'#9CA3AF' }}>
                 MY 지갑 잔액{' '}
-                <strong style={{ color:'#6B7280', fontWeight:600 }}>{fmt(MY_BALANCE)}원</strong>
+                <strong style={{ color:'#6B7280', fontWeight:600 }}>{fmt(myBalance)}원</strong>
               </span>
             </div>
 
@@ -186,14 +308,14 @@ export default function Charge() {
             </div>
 
             <div style={{ borderRadius:'14px', overflow:'hidden', border:'1px solid #EAECEF', background:'#fff' }}>
-              {ACCOUNTS.map((a, i) => {
+              {accounts.map((a, i) => {
                 const active = selectedAcc === a.id
                 return (
                   <button key={a.id} onClick={() => setSelectedAcc(a.id)} style={{
                     width:'100%', padding:'13px 16px',
                     display:'flex', alignItems:'center', gap:'12px',
                     border:'none',
-                    borderBottom: i < ACCOUNTS.length - 1 ? '1px solid #F3F4F6' : 'none',
+                    borderBottom: i < accounts.length - 1 ? '1px solid #F3F4F6' : 'none',
                     background: active ? '#F8FAFF' : '#fff',
                     cursor:'pointer', textAlign:'left', fontFamily:'inherit',
                   }}>
@@ -246,7 +368,7 @@ export default function Charge() {
               {[
                 { label:'충전 금액', value: amtNum ? `${amtFmt}원` : '—' },
                 { label:'수수료',    value: '무료', green:true },
-                { label:'충전 후 예상 잔액', value:`${fmt(MY_BALANCE + amtNum)}원`, bold:true },
+                { label:'충전 후 예상 잔액', value:`${fmt(myBalance + amtNum)}원`, bold:true },
               ].map((row, i, arr) => (
                 <div key={row.label} style={{
                   display:'flex', justifyContent:'space-between', alignItems:'center',
@@ -351,7 +473,7 @@ export default function Charge() {
                 { label:'출금 계좌',       value:`${acc.bank} ${acc.num}`,            sub:acc.name },
                 { label:'입금 지갑',       value:'MY 지갑' },
                 { label:'수수료',          value:'무료',                              green:true },
-                { label:'충전 후 예상 잔액', value:`${fmt(MY_BALANCE + amtNum)}원`,   accent:true },
+                { label:'충전 후 예상 잔액', value:`${fmt(myBalance + amtNum)}원`,   accent:true },
               ].map((row, i, arr) => (
                 <div key={row.label} style={{
                   padding:'13px 16px',
@@ -443,18 +565,31 @@ export default function Charge() {
           paddingTop:'36px',
         }}>
           <div style={{ fontSize:'13px', fontWeight:600, color:'#374151', marginBottom:'24px' }}>
-            6자리 비밀번호를 입력하세요
+            {submitting ? '충전 처리 중...' : '6자리 비밀번호를 입력하세요'}
           </div>
-          <div style={{ display:'flex', gap:'14px', marginBottom:'28px' }}>
+          <div style={{ display:'flex', gap:'14px', marginBottom:'14px' }}>
             {Array.from({ length:6 }).map((_, i) => (
               <div key={i} style={{
                 width:'13px', height:'13px', borderRadius:'50%',
                 background: i < pin.length ? '#111827' : 'transparent',
                 border: i < pin.length ? '2px solid #111827' : '2px solid #D1D5DB',
                 transition:'all .15s',
+                opacity: submitting ? 0.5 : 1,
               }} />
             ))}
           </div>
+          {errorMsg && (
+            <div style={{
+              maxWidth:'320px',
+              background:'#FEF2F2', color:'#DC2626',
+              borderRadius:'10px', padding:'10px 14px',
+              fontSize:'12px', textAlign:'center',
+              marginBottom:'14px',
+            }}>
+              {errorMsg}
+            </div>
+          )}
+          {!errorMsg && <div style={{ height:'14px' }} />}
           <button style={{
             display:'flex', alignItems:'center', gap:'5px',
             background:'none', border:'none',
@@ -475,7 +610,10 @@ export default function Charge() {
           background:'#fff', borderTop:'1px solid #F0F1F3',
           padding:'14px 24px 28px',
         }}>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
+          <div style={{
+            display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px',
+            opacity: submitting ? 0.5 : 1, pointerEvents: submitting ? 'none' : 'auto',
+          }}>
             {KEYS.map((k, i) => (
               <button key={i} onClick={() => pinInput(k)} style={{
                 height:'56px', borderRadius:'14px',
@@ -567,7 +705,7 @@ export default function Charge() {
               {[
                 { label:'충전 금액',  value:`+${amtFmt}원`, green:true },
                 { label:'출금 계좌',  value:`${acc.bank} ****${acc.num.slice(-3)}` },
-                { label:'충전 후 잔액', value:`${fmt(MY_BALANCE + amtNum)}원`, bold:true },
+                { label:'충전 후 잔액', value:`${fmt(myBalance + amtNum)}원`, bold:true },
               ].map((row, i, arr) => (
                 <div key={row.label} style={{
                   padding:'13px 16px',
@@ -609,7 +747,7 @@ export default function Charge() {
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:'11px', color:'#9CA3AF', marginBottom:'3px' }}>MY 지갑 현재 잔액</div>
                 <div style={{ fontSize:'18px', fontWeight:800, color:'#111827', letterSpacing:'-0.5px' }}>
-                  {fmt(MY_BALANCE + amtNum)}원
+                  {fmt(myBalance + amtNum)}원
                 </div>
               </div>
             </div>

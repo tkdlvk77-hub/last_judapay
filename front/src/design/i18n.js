@@ -170,6 +170,8 @@ const TRANSLATIONS = {
   'execPersonal.groupCashable': { ko: '출금 가능 자금',    en: 'Withdrawable Funds' },
   'execPersonal.groupPermission':{ ko: '권한 자금 (사용처 통제)', en: 'Permission Funds (Restricted)' },
   'execPersonal.notice':        { ko: '개인에게 보내는 자금은 목적에 따라 권한 자금(카드 결제만) 또는 출금 가능 자금으로 처리됩니다.', en: 'Personal payments are processed as permission funds (card-only) or withdrawable funds depending on purpose.' },
+  // ExecutePersonal 화면 하단 안내 박스 — notice 와 동일 문구 (컴포넌트가 infoBox 이름으로 참조)
+  'execPersonal.infoBox':       { ko: '개인에게 보내는 자금은 목적에 따라 권한 자금(카드 결제만) 또는 출금 가능 자금으로 처리됩니다.', en: 'Personal payments are processed as permission funds (card-only) or withdrawable funds depending on purpose.' },
 
   // 자금 종류
   'execPersonal.fund.gift.label':       { ko: '용돈선물',       en: 'Gift Money' },

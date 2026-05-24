@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useScrollRestore } from '../hooks/useScrollRestore'
 import { usePullToRefresh } from '../hooks/usePullToRefresh'
@@ -9,6 +9,8 @@ import {
 import { getAccountTheme } from '../design/accountTokens'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
 import { useUser } from '../contexts/UserContext'
+import { hydrateHome } from '../services/hydrate'
+import { session } from '../services/api'
 
 // ─── 공통 카드 스타일 ─────────────────────────────────────
 const CARD_STYLE = {
@@ -18,9 +20,10 @@ const CARD_STYLE = {
   overflow:'hidden',
 }
 
-// ─── 처리 필요 항목 ───────────────────────────────────────
+// ─── 처리 필요 항목 (데모 폴백) ──────────────────────────
+// 서버 GET /api/v1/app/home/pending 응답이 있으면 그걸로 덮어쓴다.
 // 각 항목 클릭 시 → /messages 로 이동, threadId로 1:1 채팅 자동 진입
-const PENDING_ITEMS = [
+const DEMO_PENDING = [
   { id:'p1', category:'입금 필요',       emoji:'💸', from:'이유진', fromInitial:'👧', avatarBg:'#FCD34D', avatarFg:'#92400E', desc:'생활비 지급 요청',  amount:'30,000원',  urgent:true,  threadId:'2' },
   { id:'p2', category:'상환 필요',       emoji:'🔄', from:'박철수', fromInitial:'박', avatarBg:'#EF4444', avatarFg:'#FFFFFF', desc:'대여금 상환 요청',  amount:'200,000원', urgent:false, threadId:'1' },
   { id:'p3', category:'자료 제출 필요',  emoji:'📁', from:'김창업', fromInitial:'김', avatarBg:'#7C3AED', avatarFg:'#FFFFFF', desc:'계약서 제출 요청',  amount:null,        urgent:false, threadId:'4' },
@@ -35,8 +38,8 @@ const CATEGORY_STYLE = {
   '자동 지급 예정':      { bg:'#ECFDF5', color:'#047857', border:'#6EE7B7', dot:'#10B981' },
 }
 
-// ─── 실시간 결제 ──────────────────────────────────────────
-const LIVE_PAYMENTS = [
+// ─── 실시간 결제 (데모 폴백) ──────────────────────────────
+const DEMO_PAYMENTS = [
   { id:'p1', merchant:'스타벅스 강남점', sub:'오늘 09:12 · MY 지갑', amount:-4500,  status:'normal',  type:'mine'     },
   { id:'o1', merchant:'카페 결제',       sub:'방금 · 박철수 · 외주비', amount:-4500,  status:'normal',  type:'external', user:'박철수' },
   { id:'p2', merchant:'이마트 역삼점',   sub:'어제 14:32 · MY 지갑', amount:-32000, status:'normal',  type:'mine'     },
@@ -45,9 +48,23 @@ const LIVE_PAYMENTS = [
   { id:'o3', merchant:'카지노 결제 시도',sub:'4.29 · 박철수 · 외주비', amount:0,      status:'blocked', type:'external', user:'박철수' },
 ]
 
-// ─── 집행 상황 ─────────────────────────────────────────────
-// 개인 권한 자금 집행 (빈 배열이면 빈 상태 메시지 노출)
-const EXECUTING = []
+// 서버 Transaction → 홈 카드 형태로 매핑
+function mapServerPaymentToCard(tx) {
+  if (!tx) return null
+  const blocked = tx.fdsStatus === 'BLOCKED' || tx.status === 'DECLINED'
+  return {
+    id:       tx.id || tx.transactionNo,
+    merchant: tx.merchantName || '결제',
+    sub:      [tx.requestedAt ? new Date(tx.requestedAt).toLocaleString('ko-KR') : '', tx.merchantMcc].filter(Boolean).join(' · '),
+    amount:   blocked ? 0 : -(Number(tx.amount) || 0),
+    status:   blocked ? 'blocked' : 'normal',
+    type:     'mine',
+  }
+}
+
+// ─── 집행 상황 (데모 폴백) ────────────────────────────────
+// 서버 GET /api/v1/app/home/executing 응답이 있으면 그걸로 덮어쓴다.
+const DEMO_EXECUTING = []
 
 // ─── 섹션 헤더 ────────────────────────────────────────────
 function SectionHeader({ eyebrow, title, actionLabel, onAction }) {
@@ -91,13 +108,65 @@ export default function HomePersonal() {
     () => sessionStorage.getItem('home_todo_expanded') === 'true'
   )
 
-  // ── Pull-to-Refresh ─────────────────────────────────────────
-  // 데모: 실제 fetch 가 붙기 전까지는 약간의 지연으로 인디케이터 노출
-  const handleRefresh = useCallback(async () => {
-    await new Promise(r => setTimeout(r, 900))
-    // TODO: hydrate() 또는 services API 로 실데이터 새로고침 연결
+  // ── 서버 데이터 (로그인 안 됐으면 데모 폴백) ──────────────
+  const [userName,  setUserName]  = useState(() => session.user?.name || '이호형')
+  const [balance,   setBalance]   = useState(null)         // null = 데모, 숫자 = 서버
+  const [pending,   setPending]   = useState(DEMO_PENDING)
+  const [payments,  setPayments]  = useState(DEMO_PAYMENTS)
+  const [executing, setExecuting] = useState(DEMO_EXECUTING)
+  const [blockedN,  setBlockedN]  = useState(null)         // null = 폴백 계산
+
+  const refreshHome = useCallback(async () => {
+    const data = await hydrateHome()
+    if (!data) return       // 로그인 안 됨 → 데모 유지
+    if (data.me?.name)            setUserName(data.me.name)
+    if (data.wallet?.available != null) setBalance(data.wallet.available)
+    if (data.pending && data.pending.length) setPending(data.pending)
+    if (data.payments && data.payments.length) {
+      const mapped = data.payments.map(mapServerPaymentToCard).filter(Boolean)
+      if (mapped.length) setPayments(mapped)
+    }
+    // executing 은 빈 배열도 정상 응답 — 폴백 유지 X (서버 단일 출처)
+    if (Array.isArray(data.executing)) setExecuting(data.executing)
+    if (typeof data.blocked === 'number') setBlockedN(data.blocked)
   }, [])
+
+  // 첫 마운트 시 prefetch
+  useEffect(() => { refreshHome() }, [refreshHome])
+
+  // ── 다른 화면(충전/결제 등)에서 hydrateHome 이 실행되면 그 결과를 받아 즉시 갱신
+  //    이벤트는 services/hydrate.js 의 hydrateHome 마지막에 dispatch.
+  //    keep-alive 스택 때문에 HomePersonal 이 unmount/remount 되지 않을 때도 동기화된다.
+  useEffect(() => {
+    const handler = (e) => {
+      const data = e?.detail
+      if (!data) return
+      if (data.me?.name)                  setUserName(data.me.name)
+      if (data.wallet?.available != null) setBalance(data.wallet.available)
+      if (data.pending && data.pending.length) setPending(data.pending)
+      if (data.payments && data.payments.length) {
+        const mapped = data.payments.map(mapServerPaymentToCard).filter(Boolean)
+        if (mapped.length) setPayments(mapped)
+      }
+      if (Array.isArray(data.executing)) setExecuting(data.executing)
+      if (typeof data.blocked === 'number') setBlockedN(data.blocked)
+    }
+    window.addEventListener('judapay:home-hydrated', handler)
+    return () => window.removeEventListener('judapay:home-hydrated', handler)
+  }, [])
+
+  // ── Pull-to-Refresh ─────────────────────────────────────────
+  const handleRefresh = useCallback(async () => {
+    try { await refreshHome() } catch {}
+  }, [refreshHome])
   const ptr = usePullToRefresh(handleRefresh)
+
+  // ── 헤더 '이상 N건' 배지 계산 (서버 값 > 클라 fallback) ──
+  const blockedCount = useMemo(() => (
+    blockedN != null
+      ? blockedN
+      : payments.filter(p => p.status === 'blocked').length
+  ), [blockedN, payments])
 
   // useScrollRestore 와 usePullToRefresh 가 같은 div 를 가리키도록 ref 병합
   const mergedRef = useCallback((node) => {
@@ -129,16 +198,16 @@ export default function HomePersonal() {
         <ProfileBadge
           icon={<PersonalEmoji />}
           accent="PERSONAL"
-          name="이호형"
+          name={userName}
           sub={null}
           onIconClick={bizInviteAccepted ? handleSwitchToBusiness : undefined}
           iconBadge={bizInviteAccepted}
           action={
-            LIVE_PAYMENTS.filter(p => p.status === 'blocked').length > 0 ? (
+            blockedCount > 0 ? (
               <button onClick={() => navigate('/payment-alerts')} style={{ display:'flex', alignItems:'center', gap:'5px', padding:'5px 11px', background:'rgba(239,68,68,0.25)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'20px', cursor:'pointer', fontFamily:'inherit' }}>
                 <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#EF4444' }} />
                 <span style={{ fontSize:'11px', fontWeight:700, color:'#FCA5A5' }}>
-                  이상 {LIVE_PAYMENTS.filter(p => p.status === 'blocked').length}건
+                  이상 {blockedCount}건
                 </span>
               </button>
             ) : null
@@ -146,7 +215,7 @@ export default function HomePersonal() {
         />
         <BalanceCard
           label="출금 가능 잔액"
-          amount="1,250,000"
+          amount={balance != null ? Number(balance).toLocaleString('ko-KR') : '1,250,000'}
           onClick={() => navigate('/wallet')}
           sub={
             <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
@@ -187,7 +256,7 @@ export default function HomePersonal() {
         <div style={{ padding:'14px 14px 100px', display:'flex', flexDirection:'column', gap:'10px', background:'#F4F5F7' }}>
 
           {/* ── 1. 처리 필요 항목 ── */}
-          <div style={{ ...CARD_STYLE, border: PENDING_ITEMS.some(p=>p.urgent) ? '1px solid #FECACA' : '1px solid #E9EAEC' }}>
+          <div style={{ ...CARD_STYLE, border: pending.some(p=>p.urgent) ? '1px solid #FECACA' : '1px solid #E9EAEC' }}>
             <button onClick={() => setTodoExpanded(v => {
                 const next = !v
                 sessionStorage.setItem('home_todo_expanded', String(next))
@@ -199,17 +268,17 @@ export default function HomePersonal() {
                 cursor:'pointer', fontFamily:'inherit', textAlign:'left' }}>
               <div>
                 <div style={{ fontSize:'10px', fontWeight:700, letterSpacing:'0.8px', marginBottom:'3px',
-                  color: PENDING_ITEMS.some(p=>p.urgent) ? '#EF4444' : '#9CA3AF' }}>
-                  {PENDING_ITEMS.some(p=>p.urgent) ? '⚠ 긴급' : 'TODAY'}
+                  color: pending.some(p=>p.urgent) ? '#EF4444' : '#9CA3AF' }}>
+                  {pending.some(p=>p.urgent) ? '⚠ 긴급' : 'TODAY'}
                 </div>
                 <div style={{ fontSize:'13px', fontWeight:700, color:'#111827' }}>처리 필요 항목</div>
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                {PENDING_ITEMS.length > 0 && (
+                {pending.length > 0 && (
                   <div style={{ position:'relative', display:'flex', alignItems:'center', justifyContent:'center' }}>
                     <div className="p-pulse-ring" style={{ position:'absolute', width:'100%', height:'100%', borderRadius:'20px', background:'#EF4444', pointerEvents:'none' }} />
                     <span className="p-badge-beat" style={{ position:'relative', fontSize:'12px', fontWeight:800, color:'#fff', background:'#EF4444', padding:'3px 12px', borderRadius:'20px' }}>
-                      {PENDING_ITEMS.length}건
+                      {pending.length}건
                     </span>
                   </div>
                 )}
@@ -219,7 +288,7 @@ export default function HomePersonal() {
                 </svg>
               </div>
             </button>
-            {todoExpanded && PENDING_ITEMS.map((item, i) => {
+            {todoExpanded && pending.map((item, i) => {
               const cs = CATEGORY_STYLE[item.category] || { bg:'#F3F4F6', color:'#374151', border:'#E5E7EB', dot:'#9CA3AF' }
               return (
                 <button key={item.id}
@@ -261,7 +330,7 @@ export default function HomePersonal() {
           {/* ── 2. 실시간 결제 ── */}
           <div style={CARD_STYLE}>
             <SectionHeader eyebrow="LIVE" title="실시간 결제" actionLabel="전체 보기" onAction={() => navigate('/payment-alerts')} />
-            {LIVE_PAYMENTS.map((p, i) => {
+            {payments.map((p, i) => {
               const isBlocked = p.status === 'blocked'
               const isExternal = p.type === 'external'
               const dotColor = isBlocked ? '#EF4444' : '#D1D5DB'
@@ -300,13 +369,13 @@ export default function HomePersonal() {
           {/* ── 3. 집행 상황 ── */}
           <div style={CARD_STYLE}>
             <SectionHeader eyebrow="IN PROGRESS" title="집행 상황" actionLabel="집행 통계" onAction={() => navigate('/stats')} />
-            {EXECUTING.length === 0 ? (
+            {executing.length === 0 ? (
               <div style={{ padding:'28px 16px', textAlign:'center' }}>
                 <div style={{ fontSize:'13px', color:'#9CA3AF', lineHeight:1.7 }}>
                   현재 권한 자금 집행 내역이 없습니다.
                 </div>
               </div>
-            ) : EXECUTING.map((item, i) => {
+            ) : executing.map((item, i) => {
               const pct = Math.round(item.current / item.total * 100)
               return (
                 <button key={item.id} onClick={() => navigate('/control-center/recipient/' + item.recipientId)}

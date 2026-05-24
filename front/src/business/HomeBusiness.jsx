@@ -13,9 +13,12 @@ import {
 } from '../shared/transactionStore'
 import { useStoreData } from '../hooks/useStoreData'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
+import { hydrateHome } from '../services/hydrate'
+import { session } from '../services/api'
 
 // ─── 데이터 ──────────────────────────────────────────────
-const COMPANY = {
+// 데모 폴백 — 서버 응답이 있으면 balance / name 등이 덮어쓰여진다.
+const DEMO_COMPANY = {
   name: '㈜주다컴퍼니',
   month: '2026년 5월',
   budget: 120000000,
@@ -32,13 +35,12 @@ const TODO_ITEMS = [
   { id: 't5', text: '잔액 부족 위험', count: 1, urgent: true, route: '/wallet',          state: null, icon: '💸' },
 ].filter(t => t.count > 0)  // 0건은 자동 제외
 
-// 2. 진행 중인 자금 집행
-const EXECUTING = [
+// 2. 진행 중인 자금 집행 (데모 폴백)
+// 서버 GET /api/v1/app/home/executing 이 빈 배열이 아니면 그걸로 덮어쓴다.
+const DEMO_EXECUTING = [
   { id: 'e1', name: '㈜오로라', type: '외주비',   current: 3200000, total: 5000000, color: '#0EA5E9', recipientId: 'aurora', status: '진행중',  statusColor: '#2563EB', statusBg: '#EFF6FF' },
   { id: 'e2', name: '박민준',   type: '빌려주기', current: 1800000, total: 1800000, color: '#F59E0B', recipientId: 'park',   status: '소명대기', statusColor: '#D97706', statusBg: '#FFFBEB' },
   { id: 'e3', name: '서울시청', type: '자금지원', current: 1500000, total: 3000000, color: '#10B981', recipientId: 'seoul',  status: '진행중',  statusColor: '#2563EB', statusBg: '#EFF6FF' },
-  // 미납중 테스트용: 주석 해제 시 하단 배지가 경고 상태로 전환됨
-  // { id: 'e4', name: '강남 임대료', type: '자동지출', current: 0, total: 5800000, color: '#EF4444', recipientId: 'rent', status: '미납중', statusColor: '#DC2626', statusBg: '#FEF2F2' },
 ]
 
 // 3. 운영 활동 피드 — 프로젝트 고정 아이템 (항상 마지막에 노출)
@@ -90,6 +92,50 @@ export default function HomeBusiness() {
 
   useEffect(() => { seedDemoTransactions() }, [])
 
+  // ── 서버 데이터 (없으면 데모 폴백) ────────────────────────
+  const [company, setCompany] = useState(() => ({
+    ...DEMO_COMPANY,
+    name: session.user?.name || DEMO_COMPANY.name,
+  }))
+  const [executing, setExecuting] = useState(DEMO_EXECUTING)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await hydrateHome()
+        if (cancelled || !data) return
+        setCompany(prev => ({
+          ...prev,
+          name:    data.me?.name      || prev.name,
+          balance: data.wallet?.available != null ? data.wallet.available : prev.balance,
+        }))
+        if (Array.isArray(data.executing) && data.executing.length) {
+          setExecuting(data.executing)
+        }
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // 다른 화면(충전/결제 등)에서 hydrateHome 호출 시 자동 동기화 — keep-alive 스택 대응
+  useEffect(() => {
+    const handler = (e) => {
+      const data = e?.detail
+      if (!data) return
+      setCompany(prev => ({
+        ...prev,
+        name:    data.me?.name || prev.name,
+        balance: data.wallet?.available != null ? data.wallet.available : prev.balance,
+      }))
+      if (Array.isArray(data.executing) && data.executing.length) {
+        setExecuting(data.executing)
+      }
+    }
+    window.addEventListener('judapay:home-hydrated', handler)
+    return () => window.removeEventListener('judapay:home-hydrated', handler)
+  }, [])
+
   // store에서 자금 집행/수신 활동 피드 구독 (최대 3개) — 마지막은 프로젝트 아이템으로 고정
   const txActivities = useStoreData(
     () => getActivityFeed({ userId: 'biz_juda', limit: 3 })
@@ -109,7 +155,7 @@ export default function HomeBusiness() {
   const urgentTotal  = TODO_ITEMS.reduce((s,t)=>s+t.count, 0)
 
   // 자동 지출 중 미납 건 감지 (자동납부 항목 중 status가 '미납중'인 경우)
-  const hasUnpaid = EXECUTING.some(e => e.status === '미납중')
+  const hasUnpaid = executing.some(e => e.status === '미납중')
 
   // [권한] 역할별 버튼 제한
   // staff: 집행·충전·출금 불가
@@ -159,8 +205,8 @@ export default function HomeBusiness() {
                 </svg>
               }
               accent="BUSINESS"
-              name={COMPANY.name}
-              sub={COMPANY.month}
+              name={company.name}
+              sub={company.month}
               onIconClick={handleSwitchToPersonal}
               action={
                 urgentTotal > 0 ? (
@@ -173,7 +219,7 @@ export default function HomeBusiness() {
             />
             <BalanceCard
               label="총 운용 가능 금액"
-              amount={COMPANY.balance.toLocaleString()}
+              amount={Number(company.balance || 0).toLocaleString()}
               onClick={() => navigate('/wallet')}
               sub={
                 <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
@@ -388,13 +434,13 @@ export default function HomeBusiness() {
             {/* ─── 4. 집행 상황 ─── */}
             <div style={CARD_STYLE}>
               <SectionHeader eyebrow="IN PROGRESS" title="집행 상황" actionLabel="집행 통계" onAction={() => navigate('/stats')} />
-              {EXECUTING.length === 0 ? (
+              {executing.length === 0 ? (
                 <div style={{ padding:'28px 16px', textAlign:'center' }}>
                   <div style={{ fontSize:'13px', color:'#9CA3AF', lineHeight:1.7 }}>
                     현재 진행 중인 자금 집행 내역이 없습니다.
                   </div>
                 </div>
-              ) : EXECUTING.map((item, i) => {
+              ) : executing.map((item, i) => {
                 const pct = Math.round(item.current / item.total * 100)
                 return (
                   <button key={item.id} onClick={() => navigate('/control-center/recipient/'+item.recipientId)}

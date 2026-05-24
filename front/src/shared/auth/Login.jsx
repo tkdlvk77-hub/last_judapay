@@ -15,6 +15,8 @@ import { useStatusBarStyle } from '../../native/useStatusBarStyle'
 import { verifyIdentity, loginPin } from '../../services/auth'
 import { bridgeAvailable, hasStoredPin, loginPinWithBio } from '../../services/biometric'
 import { session } from '../../services/api'
+import { hydrateHome } from '../../services/hydrate'
+import { dialog } from '../../components/Dialog'
 
 const KEYS_WITH_FACEID = [1,2,3,4,5,6,7,8,9,'faceid',0,'del']
 const KEYS_NO_FACEID   = [1,2,3,4,5,6,7,8,9,null,    0,'del']
@@ -164,10 +166,13 @@ export default function Login() {
     setPinError(null)
     try {
       const data = await loginPinWithBio({ ci: identity.ci })
-      session.setUser(data)
-      const type = data?.userType === 'business' ? 'business' : 'personal'
-      ctxLogin(type)
-      navigate(type === 'business' ? '/home-business' : '/home', { replace: true })
+      if (data?.requiresStepUp) {
+        // 새 디바이스/위험 신호 — PIN 재입력으로 안내
+        setPinError('새 디바이스가 감지되었습니다. 보안 확인을 위해 PIN을 한 번 더 입력해 주세요.')
+        setPin('')
+        return
+      }
+      finishLogin(data)
     } catch (e) {
       const msg = e?.message || ''
       if (msg.includes('canceled') || msg.includes('auth canceled')) {
@@ -185,15 +190,36 @@ export default function Login() {
     setPinError(null)
     try {
       const data = await loginPin({ ci: identity.ci, pin: finalPin })
-      const type = data?.userType === 'business' ? 'business' : 'personal'
-      ctxLogin(type)
-      navigate(type === 'business' ? '/home-business' : '/home', { replace: true })
+      if (data?.requiresStepUp) {
+        // 새 디바이스/위험 신호 — PIN 재입력 (두 번째 시도는 RETURNING → 통과)
+        setPinError('새 디바이스가 감지되었습니다. 보안 확인을 위해 PIN을 한 번 더 입력해 주세요.')
+        setPin('')
+        return
+      }
+      finishLogin(data)
     } catch (e) {
-      setPinError(e?.message || 'PIN이 일치하지 않습니다.')
+      const msg = e?.message || 'PIN이 일치하지 않습니다.'
+      // 서버에서 내려온 메시지로 alert 띄우기 — 5회 잠금 등 중요한 정보 전달
+      dialog.alert({
+        title: /잠금|RATE|5회/i.test(msg) ? '잠금 안내' : 'PIN 오류',
+        message: msg,
+      })
+      setPinError(msg)
       setPin('')
     } finally {
       setPinLoading(false)
     }
+  }
+
+  /** 로그인 성공 후 공통 처리 — userType 분기 + 네비게이션. 홈 데이터는 백그라운드 prefetch. */
+  const finishLogin = (data) => {
+    session.setUser(data)
+    const type = data?.userType === 'business' ? 'business' : 'personal'
+    ctxLogin(type)
+    // 홈 데이터는 백그라운드로 — navigate 를 막지 않는다.
+    // 홈 컴포넌트도 자체적으로 hydrateHome 을 호출하므로 양쪽 모두에서 자연스럽게 반영.
+    hydrateHome().catch(() => {})
+    navigate(type === 'business' ? '/home-business' : '/home', { replace: true })
   }
 
   // ─────────────────────────────────────────────────

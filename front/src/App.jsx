@@ -74,10 +74,22 @@ export default function App() {
       })
     } else {
       // ── PUSH / REPLACE ───────────────────────────────────────
-      const isReset = RESET_PATHS.has(currPath)
       setStack(prev => {
+        // 같은 경로가 스택에 이미 있고, 그 위에 다른 화면이 쌓여 있다면
+        // "뒤로 돌아가는 의도" 로 해석 — 위 화면들을 exiting 처리.
+        // (자금집행 깊은 화면의 헤더 백 버튼이 navigate('/home') 처럼 절대경로로
+        //  PUSH 하는 패턴, /execute/personal 의 백 버튼이 navigate('/execute') 하는
+        //  패턴 등을 한 곳에서 자연스럽게 처리.)
+        const existingIdx = prev.findIndex(s => s.loc.pathname === currPath)
+        if (existingIdx >= 0 && existingIdx < prev.length - 1) {
+          return prev.map((s, i) => (
+            i > existingIdx ? { ...s, phase: 'exiting' } : { ...s, phase: 'idle' }
+          ))
+        }
+
+        const isReset = RESET_PATHS.has(currPath)
         if (isReset) {
-          // Start('/') 또는 탭 화면: 스택 비우고 idle 로 — 진입 애니메이션 없음
+          // 외부 진입 / 첫 마운트 — 스택 비우고 idle 로 (애니메이션 없음)
           return [{ key: location.key, loc: location, phase: 'idle' }]
         }
         return [
