@@ -8,6 +8,7 @@ import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { deleteThreadMemo } from './messagesData'
 import { NOTIF_TONE } from './messagesUtils'
+import { sendMessage as sendServerMessage, markThreadRead } from '../../services/messages'
 
 // lazy import — 채팅방 진입 애니메이션(280ms) 동안 백그라운드 로드
 // 액션시트는 버튼 누를 때 필요하므로 진입 직후 렌더링 불필요
@@ -26,7 +27,10 @@ const MOCK_LOANS = [
   { id:'l2', label:'운영자금 대여', amount:'10,000,000원', date:'03.20', type:'대여금',   badge:'#D97706', badgeBg:'#FFFBEB' },
 ]
 
-export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType, prefillMsg, onPrefillUsed }) {
+export default function ChatRoom({
+  thread, chat, onBack, onOpenDetail, userType, prefillMsg, onPrefillUsed,
+  onLoadMore, hasMore = false, loadingMore = false, prependedCount = 0,
+}) {
   const theme = getAccountTheme()
   const isApprovalThread = thread.id === 'approval'
 
@@ -74,18 +78,72 @@ export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType,
   const [ccManager, setCcManager]       = useState('')
   const [ccConfirmText, setCcConfirmText] = useState('')
 
-  // ── 최초 마운트: 페인트 전에 즉시 맨 하단으로 (슬라이드 인 중에 스크롤 안 보임) ──
+  // ── 자동 스크롤 정책 ──────────────────────────────────────
+  // 1) 첫 진입 + chat 메시지 도착 시 → 즉시 맨 하단
+  // 2) 본인 송신 (localMsgs 증가) → 항상 맨 하단으로 (자기 메시지 확인)
+  // 3) 새 메시지 (broadcast) + 사용자가 아래 근처 → 따라감
+  // 4) 새 메시지 + 사용자가 위에 있음 → 따라가지 않고 pendingNewCount++ (플로팅 버튼)
+  // 5) prepend → 위치 유지 (별도 useLayoutEffect)
+  // ───────────────────────────────────────────────────────────
+  const [initialScrollDone, setInitialScrollDone] = useState(false)
+  const [pendingNewCount,   setPendingNewCount]   = useState(0)
+  const prevServerLenRef   = useRef(0)
+  const prevLocalLenRef    = useRef(0)
+  const prevPrependedRef   = useRef(0)
+
+  // 스레드 바뀌면 reset
+  useEffect(() => {
+    setInitialScrollDone(false)
+    setPendingNewCount(0)
+    prevServerLenRef.current = 0
+    prevLocalLenRef.current  = 0
+    prevPrependedRef.current = 0
+  }, [thread?._threadId, thread?.id])
+
   useLayoutEffect(() => {
     const el = scrollContainerRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [])
+    if (!el) return
+    const curServerLen = chat?.messages?.length || 0
+    const curLocalLen  = localMsgs.length
+    const curLen       = curServerLen + curLocalLen
+    const prevLen      = prevServerLenRef.current
+    const curPrep      = prependedCount || 0
+    const prevPrep     = prevPrependedRef.current
+    const localAdded   = curLocalLen > prevLocalLenRef.current
+    prevServerLenRef.current  = curLen
+    prevLocalLenRef.current   = curLocalLen
+    prevPrependedRef.current  = curPrep
 
-  // ── 새 메시지 전송 시에만 부드럽게 스크롤 ──
-  useEffect(() => {
-    if (localMsgs.length > 0) {
-      msgBottomRef.current?.scrollIntoView({ behavior:'smooth' })
+    // (1) 첫 진입 — 메시지가 처음 도착했을 때
+    if (!initialScrollDone && curLen > 0) {
+      el.scrollTop = el.scrollHeight
+      setInitialScrollDone(true)
+      return
     }
-  }, [localMsgs.length])
+    if (!initialScrollDone) return
+
+    // (5) prepend
+    if (curPrep > prevPrep) return
+
+    if (curLen > prevLen) {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (localAdded || distance < 200) {
+        // (2) 본인 송신 or (3) 사용자가 아래 근처 → 따라감
+        msgBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+        setPendingNewCount(0)
+      } else {
+        // (4) 사용자가 위에 있음 + broadcast 새 메시지 → 카운트만 증가
+        const newCount = curLen - prevLen
+        if (newCount > 0) setPendingNewCount(c => c + newCount)
+      }
+    }
+  }, [chat?.messages?.length, localMsgs.length, prependedCount, initialScrollDone])
+
+  // 플로팅 버튼 클릭 — 맨 아래로 이동 + 카운트 리셋
+  const jumpToBottom = useCallback(() => {
+    msgBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    setPendingNewCount(0)
+  }, [])
 
   // ── 집행 취소 핸들러 ──
   function handleContractCancelStep2() {
@@ -122,18 +180,128 @@ export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType,
   }, [])
   const cancelLongPress = useCallback(() => { clearTimeout(lpTimer.current) }, [])
 
-  // ── pushLocalMsg ──
+  // ── pushLocalMsg — 텍스트 메시지는 서버 스레드면 POST + broadcast 로 양쪽 동기화 ──
+  //   clientMsgId 를 부여해서 broadcast 로 본인에게 돌아온 메시지와 매칭 → 중복 표시 방지.
   function pushLocalMsg(msg) {
     const now = new Date()
     const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0')
-    setLocalMsgs(prev => [...prev, { ...msg, id: 'local_' + Date.now(), date:'오늘', time }])
+    const tempId = 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
+    const clientMsgId = 'cm_' + tempId
+
+    const isPlainText =
+      msg && (!msg.type || msg.type === 'text' || msg.type === 'memo') &&
+      typeof (msg.text || msg.content) === 'string' &&
+      (msg.text || msg.content).trim().length > 0
+    const isServerThread = thread?._fromServer && thread?._threadId
+
+    // ① 즉시 optimistic 표시 (clientMsgId 도 보존)
+    setLocalMsgs(prev => [...prev, {
+      ...msg,
+      id: tempId,
+      date: '오늘',
+      time,
+      _pending: isServerThread && isPlainText,
+      _clientMsgId: clientMsgId,
+    }])
+
+    // ② 서버 스레드 + 단순 텍스트면 서버 송신
+    if (isServerThread && isPlainText) {
+      const text = (msg.text || msg.content).trim()
+      sendServerMessage(thread._threadId, text, clientMsgId)
+        .then(() => {
+          // pending 만 풀어둠. 실제 제거는 broadcast 의 dedup 로직(allMsgs) 이 담당.
+          setLocalMsgs(prev => prev.map(m =>
+            m.id === tempId ? { ...m, _pending: false } : m
+          ))
+        })
+        .catch(err => {
+          console.warn('[ChatRoom] sendMessage failed:', err?.message)
+          setLocalMsgs(prev => prev.map(m =>
+            m.id === tempId ? { ...m, _pending: false, _failed: true } : m
+          ))
+        })
+    } else {
+      setLocalMsgs(prev => prev.map(m =>
+        m.id === tempId ? { ...m, _pending: false } : m
+      ))
+    }
   }
+
+  // ── 재전송 (failed 메시지 클릭) ──
+  function resendLocalMsg(localId) {
+    setLocalMsgs(prev => prev.map(m =>
+      m.id === localId ? { ...m, _pending: true, _failed: false } : m
+    ))
+    const target = localMsgs.find(m => m.id === localId)
+    if (!target || !thread?._fromServer) return
+    const text = (target.text || target.content || '').trim()
+    if (!text) return
+    sendServerMessage(thread._threadId, text, target._clientMsgId)
+      .then(() => setLocalMsgs(prev => prev.map(m =>
+        m.id === localId ? { ...m, _pending: false } : m
+      )))
+      .catch(err => {
+        console.warn('[ChatRoom] resend failed:', err?.message)
+        setLocalMsgs(prev => prev.map(m =>
+          m.id === localId ? { ...m, _pending: false, _failed: true } : m
+        ))
+      })
+  }
+
+  // ── 스레드 진입 시 읽음 처리 ──
+  useEffect(() => {
+    if (!thread?._fromServer || !thread?._threadId) return
+    markThreadRead(thread._threadId).catch(err =>
+      console.warn('[ChatRoom] markRead failed:', err?.message))
+  }, [thread?._threadId, thread?._fromServer])
+
+  // ── 무한 스크롤: 위에 닿으면 과거 메시지 로드 ──
+  //   onScroll 에서 scrollTop < 80 이면 onLoadMore 트리거.
+  //   prependedCount 가 증가하면 useLayoutEffect 에서 scrollTop 보정해 위치 유지.
+  const prevScrollHeightRef = useRef(0)
+  const handleScroll = useCallback((e) => {
+    const el = e.currentTarget
+    // 무한 스크롤: 위에 닿으면 과거 로드
+    if (onLoadMore && !loadingMore && hasMore && el.scrollTop < 80) {
+      prevScrollHeightRef.current = el.scrollHeight
+      onLoadMore()
+    }
+    // 사용자가 직접 맨 아래까지 스크롤 → 새 메시지 카운트 리셋
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distance < 50 && pendingNewCount > 0) {
+      setPendingNewCount(0)
+    }
+  }, [onLoadMore, loadingMore, hasMore, pendingNewCount])
+
+  // prepend 후 scrollTop 보정 (사용자가 보던 메시지가 그대로 보이도록)
+  useLayoutEffect(() => {
+    if (prependedCount <= 0) return
+    const el = scrollContainerRef.current
+    if (!el) return
+    const prev = prevScrollHeightRef.current
+    if (prev > 0) {
+      const delta = el.scrollHeight - prev
+      if (delta > 0) el.scrollTop = delta + el.scrollTop  // 새 메시지 높이만큼 내림
+      prevScrollHeightRef.current = 0
+    }
+  }, [prependedCount])
 
   // ── 집행률 ──
   const pct = isApprovalThread ? 0 : Math.round((thread.totalExecuted / thread.totalAmount) * 100)
 
-  // ── 전체 메시지 ──
-  const allMsgs = [...(chat ? chat.messages : []), ...localMsgs].filter(m => !deletedMsgIds.has(m.id))
+  // ── 전체 메시지 — clientMsgId 매칭으로 optimistic 중복 제거 ──
+  //   broadcast 가 와서 chat.messages 에 같은 _clientMsgId 가 있으면 localMsgs 에서 빼고
+  //   서버 정식 메시지만 표시. 응답 빨리 오는 케이스에서는 깜빡임 없이 자연스럽게 교체됨.
+  const allMsgs = (() => {
+    const serverMsgs = chat ? chat.messages : []
+    const serverClientIds = new Set(
+      serverMsgs.map(m => m._clientMsgId).filter(Boolean)
+    )
+    const filteredLocal = localMsgs.filter(m =>
+      !m._clientMsgId || !serverClientIds.has(m._clientMsgId)
+    )
+    return [...serverMsgs, ...filteredLocal].filter(m => !deletedMsgIds.has(m.id))
+  })()
 
   // ── 모의 거래/대여 데이터 ──
   // ── 하단 칩 정의: userType별 분기 ──
@@ -167,7 +335,7 @@ export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType,
     <div style={{ display:'flex', flexDirection:'column', height:'100%', background: COLORS.bg, position:'relative' }}>
 
       {/* 헤더+메시지 통합 스크롤 영역 */}
-      <div ref={scrollContainerRef} style={{ flex:1, overflowY:'auto' }}>
+      <div ref={scrollContainerRef} onScroll={handleScroll} style={{ flex:1, overflowY:'auto' }}>
 
         {/* ① Sticky 네비 바 — 스크롤해도 항상 고정 */}
         <div className="sticky-nav-safe" style={{ position:'sticky', top:0, zIndex:10, background: theme.headerSolid, display:'flex', alignItems:'center', gap:'10px', padding:'16px 16px 14px', overflow:'hidden' }}>
@@ -300,6 +468,17 @@ export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType,
 
         {/* 메시지 목록 */}
         <div style={{ padding:'14px 14px 10px', background:'#F7F8FA', minHeight:'300px' }}>
+          {/* 무한 스크롤 인디케이터 */}
+          {hasMore && (
+            <div style={{ textAlign:'center', padding:'8px 0', fontSize:'11px', color: COLORS.t4 }}>
+              {loadingMore ? '과거 메시지 불러오는 중…' : '위로 스크롤하면 더 보입니다'}
+            </div>
+          )}
+          {!hasMore && allMsgs.length > 20 && (
+            <div style={{ textAlign:'center', padding:'8px 0', fontSize:'10px', color: COLORS.t5 }}>
+              · 채팅 시작 ·
+            </div>
+          )}
           {allMsgs.map((msg, i) => {
             const prevMsg = i > 0 ? allMsgs[i-1] : null
             const showDate = !prevMsg || (prevMsg.date ?? '') !== (msg.date ?? '')
@@ -719,18 +898,28 @@ export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType,
                         onTouchEnd={cancelLongPress}
                         onContextMenu={e => { if(msg.from==='me'){ e.preventDefault(); if(canDelete(msg)) setDeleteTarget({ id:msg.id, isMemo:false }) } }}
                         style={{ padding:'10px 14px', borderRadius: msg.from === 'me' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-                          background: msg.from === 'me' ? theme.brandDark : '#fff',
+                          background: msg.from === 'me'
+                            ? (msg._failed ? '#DC2626' : theme.brandDark)
+                            : '#fff',
                           color: msg.from === 'me' ? '#fff' : COLORS.t1,
                           fontSize:'13px', lineHeight:1.55,
+                          opacity: msg._pending ? 0.55 : 1,
                           boxShadow: msg.from === 'other' ? '0 1px 3px rgba(0,0,0,0.07)' : 'none',
-                          userSelect:'none', cursor: msg.from === 'me' ? 'pointer' : 'default' }}>
+                          userSelect:'none', cursor: (msg.from === 'me' || msg._failed) ? 'pointer' : 'default' }}
+                        onClick={() => msg._failed && typeof resendLocalMsg === 'function' && resendLocalMsg(msg.id)}>
                         {msg.text}
                       </div>
                       <span style={{ fontSize:'10px', color: COLORS.t3, fontWeight:500, marginTop:'3px', paddingLeft:'2px', paddingRight:'2px' }}>
-                        {msg.time}
-                        {msg.from==='me' && (msg.read
-                          ? <span style={{ color: COLORS.t4, fontSize:'9px' }}> · 읽음</span>
-                          : <span style={{ color: COLORS.t4, fontSize:'9px' }}> · 미읽음</span>)}
+                        {msg._failed
+                          ? <span style={{ color:'#DC2626', fontWeight:700 }}>⚠ 전송 실패 · 탭하여 재전송</span>
+                          : msg._pending
+                            ? <span style={{ color: COLORS.t4 }}>전송 중…</span>
+                            : (<>
+                                {msg.time}
+                                {msg.from==='me' && (msg.read
+                                  ? <span style={{ color: COLORS.t4, fontSize:'9px' }}> · 읽음</span>
+                                  : <span style={{ color: COLORS.t4, fontSize:'9px' }}> · 미읽음</span>)}
+                              </>)}
                       </span>
                     </div>
                   </div>
@@ -741,6 +930,40 @@ export default function ChatRoom({ thread, chat, onBack, onOpenDetail, userType,
           <div ref={msgBottomRef} style={{ height:'8px' }} />
         </div>
       </div>{/* 스크롤 래퍼 끝 */}
+
+      {/* ── 플로팅 "새 메시지 N개" 버튼 ── */}
+      {pendingNewCount > 0 && (
+        <button
+          onClick={jumpToBottom}
+          style={{
+            position: 'absolute',
+            bottom: '128px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: theme.brandDark,
+            color: '#fff',
+            border: 'none',
+            borderRadius: '999px',
+            padding: '9px 16px 9px 14px',
+            fontSize: '12px',
+            fontWeight: 700,
+            boxShadow: '0 6px 16px rgba(0,0,0,0.22)',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            zIndex: 30,
+            animation: 'page-enter-right 200ms ease-out',
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+          새 메시지 {pendingNewCount}개
+        </button>
+      )}
 
       {/* ── 입력 바 ── */}
       {isApprovalThread ? (

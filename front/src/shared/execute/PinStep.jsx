@@ -67,7 +67,7 @@ export default function PinStep({
           <div style={{ fontSize:'12px', color:'#9CA3AF', lineHeight:1.7, marginBottom:'28px' }}>
             {bizRole === 'manager' ? '승인자 권한은 집행을 직접 완료할 수 없습니다.' : '조회전용 권한으로는 자금 집행이 불가합니다.'}
           </div>
-          <button onClick={() => window.location.assign(exitTo)}
+          <button onClick={() => navigate(exitTo, { replace: true })}
             style={{ width:'100%', maxWidth:'280px', height:'48px', background:'#111827', color:'#fff', border:'none', borderRadius:'14px', fontSize:'14px', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
             이전으로
           </button>
@@ -284,7 +284,7 @@ export default function PinStep({
                 }}>
                 {t('darkHeader.exit.cancel')}
               </button>
-              <button onClick={() => { setShowExitModal(false); window.location.assign(exitTo) }}
+              <button onClick={() => { setShowExitModal(false); navigate(exitTo, { replace: true }) }}
                 style={{
                   flex:1, height:'46px',
                   background: COLORS.danger, color:'#fff',

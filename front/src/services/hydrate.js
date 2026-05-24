@@ -17,6 +17,7 @@
 // 추가하고 여기서 호출하면 됩니다.
 // ─────────────────────────────────────────────────────────
 import { api, session } from './api'
+import { connectRealtime } from './realtime'
 
 /**
  * 앱 부팅 시 호출. 현재는 로그인 여부만 확인하고 이벤트 발행.
@@ -25,6 +26,8 @@ import { api, session } from './api'
 export async function hydrate() {
   if (!session.user) return
   try {
+    // 실시간 채널 연결 (idempotent — 이미 연결됐으면 재사용)
+    connectRealtime()
     window.dispatchEvent(new CustomEvent('judapay:hydrated', { detail: { ok: true } }))
   } catch (e) {
     console.warn('[hydrate] failed:', e?.message)

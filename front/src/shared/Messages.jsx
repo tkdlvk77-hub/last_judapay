@@ -144,12 +144,12 @@ export default function Messages() {
   // ── 서버 스레드 (로그인 시) ──
   //   try/catch 강화 + 빈 응답/예상 외 응답 가드 + 어댑터 에러 격리
   const [serverThreads, setServerThreads] = useState([])
+  const [serverRefreshTick, setServerRefreshTick] = useState(0)
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
         const raw = await listServerThreads()
-        // 응답이 배열이 아닐 수 있음 (envelope 미언랩 등) — 방어
         const items = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])
         const adapted = items
           .map(t => { try { return adaptServerThread(t) } catch (e) { console.warn('[Messages] adapt fail', e, t); return null } })
@@ -160,7 +160,31 @@ export default function Messages() {
       }
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [serverRefreshTick])
+
+  // ── 실시간 수신: 새 메시지 들어오면 스레드/채팅 갱신 ──
+  useEffect(() => {
+    const onRealtime = (e) => {
+      const d = e?.detail
+      if (!d || d.kind !== 'message' || !d.threadId) return
+      // 스레드 목록 재조회 (가장 단순 — lastMsg/unread 모두 정확)
+      setServerRefreshTick(x => x + 1)
+      // 현재 열린 채팅방의 메시지면 즉시 append
+      if (activeThread && d.message) {
+        const tid = d.threadId
+        setServerChats(prev => {
+          const cur = prev[tid] || { messages: [], fdsAlert: null }
+          const newOne = adaptServerMessages([d.message]).messages[0]
+          if (!newOne) return prev
+          // 중복 방지 (id로)
+          if (cur.messages.some(m => m.id === newOne.id || m._serverId === d.message.id)) return prev
+          return { ...prev, [tid]: { ...cur, messages: [...cur.messages, { ...newOne, _serverId: d.message.id }] } }
+        })
+      }
+    }
+    window.addEventListener('judapay:realtime', onRealtime)
+    return () => window.removeEventListener('judapay:realtime', onRealtime)
+  }, [activeThread])
 
   // 서버 스레드 우선 + 클라 store + 정적 데모 순으로 합침
   // (같은 threadKey 가 양쪽에 있으면 서버 우선)
@@ -214,30 +238,76 @@ export default function Messages() {
     }
   })
 
-  // ── 서버 스레드 클릭 시 메시지 비동기 fetch ──
-  //   activeThread 가 _fromServer 스레드면 listMessagesByThread() → 어댑터로 변환 → state
-  const [serverChats, setServerChats] = useState({})  // { [threadId]: { messages, fdsAlert } }
+  // ── 서버 스레드 진입 시 메시지 fetch (cursor 페이지네이션) ──
+  //   serverChats[threadId] = { messages, fdsAlert, hasMore, oldest, loading }
+  //   첫 진입 시 최신 50개 fetch. 위로 스크롤 → onLoadMore → 50개 더 prepend.
+  const [serverChats, setServerChats] = useState({})
   useEffect(() => {
     if (!thread || !thread._fromServer) return
     const threadId = thread._threadId
-    if (!threadId || serverChats[threadId]) return    // 이미 받아둔 거면 스킵
+    if (!threadId) return
     let cancelled = false
     ;(async () => {
       try {
-        const items = await listMessagesByThread(threadId)
+        const res = await listMessagesByThread(threadId)
+        // 서버 응답: { items, hasMore, oldest }
+        const items   = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+        const hasMore = !!res?.hasMore
+        const oldest  = res?.oldest || (items[0]?.createdAt ?? null)
         if (!cancelled) {
-          setServerChats(prev => ({ ...prev, [threadId]: adaptServerMessages(items) }))
+          const adapted = adaptServerMessages(items)
+          setServerChats(prev => ({
+            ...prev,
+            [threadId]: { ...adapted, hasMore, oldest, loading: false },
+          }))
         }
       } catch (e) {
         console.warn('[Messages] listMessagesByThread failed', e?.message)
-        // 실패해도 빈 chat 으로라도 화면 진입 가능하게
-        if (!cancelled) {
-          setServerChats(prev => ({ ...prev, [threadId]: { messages: [], fdsAlert: null } }))
+        if (!cancelled && !serverChats[threadId]) {
+          setServerChats(prev => ({
+            ...prev,
+            [threadId]: { messages: [], fdsAlert: null, hasMore: false, oldest: null, loading: false },
+          }))
         }
       }
     })()
     return () => { cancelled = true }
   }, [thread?._fromServer, thread?._threadId])
+
+  // ── 위로 스크롤 시 과거 메시지 더 가져오기 (ChatRoom 에서 호출) ──
+  const loadOlderMessages = useCallback(async (threadId) => {
+    const cur = serverChats[threadId]
+    if (!cur || cur.loading || !cur.hasMore || !cur.oldest) return
+    setServerChats(prev => ({ ...prev, [threadId]: { ...prev[threadId], loading: true } }))
+    try {
+      const res = await listMessagesByThread(threadId, { before: cur.oldest })
+      const items   = Array.isArray(res?.items) ? res.items : []
+      const hasMore = !!res?.hasMore
+      const oldest  = res?.oldest || cur.oldest
+      const adapted = adaptServerMessages(items)
+      setServerChats(prev => {
+        const exist = prev[threadId]
+        if (!exist) return prev
+        // 중복 방지 (_serverId 매칭)
+        const existServerIds = new Set(exist.messages.map(m => m._serverId).filter(Boolean))
+        const dedupedNew = adapted.messages.filter(m => !existServerIds.has(m._serverId))
+        return {
+          ...prev,
+          [threadId]: {
+            ...exist,
+            messages: [...dedupedNew, ...exist.messages],   // 과거가 앞에
+            hasMore,
+            oldest,
+            loading: false,
+            _justPrepended: dedupedNew.length,  // ChatRoom 이 scrollTop 보정에 사용
+          },
+        }
+      })
+    } catch (e) {
+      console.warn('[Messages] loadOlder failed', e?.message)
+      setServerChats(prev => ({ ...prev, [threadId]: { ...prev[threadId], loading: false } }))
+    }
+  }, [serverChats])
 
   const chat = (() => {
     if (!thread) return null
@@ -397,6 +467,10 @@ export default function Messages() {
               userType={userType}
               prefillMsg={pendingPrefillMsg}
               onPrefillUsed={() => setPendingPrefillMsg(null)}
+              onLoadMore={thread?._fromServer ? () => loadOlderMessages(thread._threadId) : null}
+              hasMore={thread?._fromServer ? !!serverChats[thread._threadId]?.hasMore : false}
+              loadingMore={thread?._fromServer ? !!serverChats[thread._threadId]?.loading : false}
+              prependedCount={thread?._fromServer ? (serverChats[thread._threadId]?._justPrepended || 0) : 0}
             />
           </Suspense>
         </div>

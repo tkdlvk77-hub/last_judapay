@@ -133,7 +133,7 @@ export function adaptServerThread(t) {
     balance:      0,                     // 통지형 자금집행은 즉시 완결 → 잔액 0
     lastMsg:      lastMsgText,
     time:         formatThreadTime(lm.createdAt),
-    unread:       0,
+    unread:       Number(t.unreadCount) || 0,
     status:       'normal',
     statusLabel:  '완료',
     statusBg:     '#E6F5EF',
@@ -212,9 +212,12 @@ export function adaptServerMessages(serverMessages) {
     }
     if (m.msgType === 'user') {
       return { id: id++,
-        from: m.senderUserId ? 'me' : 'system',   // 본인 메시지 표시 (확장 가능)
+        from: m.senderUserId ? 'me' : 'system',
         text: m.text || '',
-        date, time }
+        date, time,
+        read: m.otherRead === true,    // 본인 메시지면 "상대가 읽었는지"
+        _clientMsgId: payload.clientMsgId || null,
+        _serverId: m.id }
     }
     return { id: id++, from: 'system', text: m.text || '', date, time }
   })

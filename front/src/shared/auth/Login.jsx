@@ -241,7 +241,15 @@ export default function Login() {
           style={{ ...S.fieldInput, marginBottom:'14px' }}
           value={phone}
           onChange={e => {
-            setPhone(e.target.value)
+            // 숫자만 추출 → 010-XXXX-XXXX 형태로 자동 포맷
+            const digits = e.target.value.replace(/\D/g, '').slice(0, 11)
+            let formatted = digits
+            if (digits.length > 3 && digits.length <= 7) {
+              formatted = `${digits.slice(0,3)}-${digits.slice(3)}`
+            } else if (digits.length > 7) {
+              formatted = `${digits.slice(0,3)}-${digits.slice(3,7)}-${digits.slice(7)}`
+            }
+            setPhone(formatted)
             if (notRegistered) { setNotRegistered(false); setPhoneError(null) }
           }}
           placeholder="010-0000-0000"

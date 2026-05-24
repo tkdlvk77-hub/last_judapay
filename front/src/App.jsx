@@ -141,8 +141,22 @@ export default function App() {
     setStack(prev => prev.filter(s => !(s.key === key && s.phase === 'exiting')))
   }
 
-  // 상위 2개만 렌더 (이전 화면 + 현재 화면)
-  const visible = stack.slice(-2)
+  // ── 렌더할 화면 결정 ────────────────────────────────────
+  // 단순 slice(-2) 는 "한 번에 여러 화면이 exiting" 되는 케이스에서 깨짐.
+  //   예: home → select → gift 상태에서 ExitConfirm 으로 /home 직진 시
+  //       [home(idle), select(exiting), gift(exiting)] → slice(-2) = [select,gift]
+  //       → 둘 다 translate3d(100%) 로 화면 밖 → 빈 배경만 보임
+  //
+  // 올바른 정책: 가장 위의 활성 화면(entered/entering/idle) + 그 위 exiting 들
+  //              + 그 아래 한 화면(드러나는 배경) 을 함께 렌더.
+  const activeTopIdx = (() => {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].phase !== 'exiting') return i
+    }
+    return 0   // 모두 exiting (이론적으론 발생 안 함)
+  })()
+  const startIdx = Math.max(0, activeTopIdx - 1)
+  const visible  = stack.slice(startIdx)
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', width: '100%', height: '100%' }}>

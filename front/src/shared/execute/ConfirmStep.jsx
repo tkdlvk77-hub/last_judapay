@@ -358,7 +358,7 @@ export default function ConfirmStep({
       {showExitModal && (
         <ExitConfirmModal
           onCancel={() => setShowExitModal(false)}
-          onConfirm={() => { setShowExitModal(false); window.location.assign(exitTo) }}
+          onConfirm={() => { setShowExitModal(false); navigate(exitTo, { replace: true }) }}
         />
       )}
     </PhoneShell>
