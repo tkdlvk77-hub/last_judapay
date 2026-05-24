@@ -5,6 +5,9 @@ import { useT } from '../../design/i18n'
 import WalletPicker from '../../shared/WalletPicker'
 import { getWalletById } from '../../shared/walletsData'
 import { addTransaction } from '../../shared/transactionStore'
+import { executePayout } from '../../services/payout'
+import { session } from '../../services/api'
+import { dialog } from '../../components/Dialog'
 import DarkHeader from '../../components/DarkHeader'
 import ConfirmStep from '../../shared/execute/ConfirmStep'
 import PinStep from '../../shared/execute/PinStep'
@@ -47,17 +50,20 @@ function todayStr() {
 // 금액 입력 디스플레이
 // ─────────────────────────────────────────────────────────
 function AmountDisplay({ amount, onChange, onClear }) {
-  const len = amount ? String(amount).length : 1
-  const fontSize = len <= 6 ? 44 : len <= 8 ? 36 : len <= 10 ? 28 : 22
+  // amount 는 숫자만 담는 string (예: "130000"). 표시는 콤마 포함 ("130,000").
+  const rawDigits = String(amount || '').replace(/[^0-9]/g, '')
+  const displayValue = rawDigits ? Number(rawDigits).toLocaleString('ko-KR') : ''
+  const len = displayValue ? displayValue.length : 1
+  const fontSize = len <= 7 ? 44 : len <= 10 ? 36 : len <= 13 ? 28 : 22
 
   return (
     <div style={{ position: 'relative', height: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ display: 'inline-flex', alignItems: 'baseline', gap: '3px', transform: 'translateX(18px)' }}>
         <input
-          type="number"
+          type="text"
           inputMode="numeric"
-          value={amount}
-          onChange={e => onChange(e.target.value)}
+          value={displayValue}
+          onChange={e => onChange(e.target.value.replace(/[^0-9]/g, ''))}
           placeholder="0"
           style={{
             fontSize: `${fontSize}px`,
@@ -146,27 +152,69 @@ export default function ExecuteGift() {
   }
   useStepHistory(goBack, step === 'input', !!recipient)
 
-  const pushToStore = () => {
+  // ─────────────────────────────────────────────────────
+  // 자금집행: 서버 호출 + 클라 store 갱신
+  //   1) executePayout({...}, { pin })
+  //      → 서버: 잔액 차감 + payout INSERT + 메시지 자동 생성
+  //   2) addTransaction({...}) — 기존 UI 호환 위해 store 도 갱신
+  // ─────────────────────────────────────────────────────
+  const pushToStore = async (pin) => {
     const now = nowStr()
     const memoText = memo.trim()
+    const me = session.user
 
     const dealDescription = `${categoryLabel}${memoText ? ` · ${memoText}` : ''} · 즉시 입금`
-
     const timeline = [
       { time: now, label: `${recipient.name}에게 ${categoryLabel} 지급`, type: 'event' },
       { time: now, label: '받은 지갑으로 입금 완료', type: 'done' },
     ]
-
     const safety = [
       `${recipient.name}의 받은 지갑으로 즉시 입금 (출금 불가, 카드 결제만)`,
       '지급 증빙 자동 보관 (5년)',
       '이상거래 자동 감지',
     ]
 
+    // ─── 서버 호출 ────────────────────────────────────
+    let serverPayout = null
+    try {
+      serverPayout = await executePayout({
+        type:        'gift',
+        typeLabel:   '용돈/선물',
+        typeIcon:    '🎁',
+        category:    'notification',
+        mainCat:     '운영비',
+        subCat:      '개인사용',
+        amount:      amtNum,
+        whtAmount:   0,
+        netAmount:   amtNum,
+        recipient: {
+          userId:     recipient.userId || null,
+          phone:      recipient.phone || null,
+          name:       recipient.name,
+          verified:   !!recipient.verified,
+          isBusiness: !!recipient.isBusiness,
+        },
+        payDateMode: 'immediate',
+        status:      'completed',
+        statusLabel: '지급 완료',
+        reason:      `${categoryLabel}${memoText ? ` · ${memoText}` : ''}`,
+        walletId,
+        walletLabel,
+        dealTitle:   `${recipient.name} ${categoryLabel}`,
+      }, { pin })
+      console.log('[ExecuteGift] payout success', serverPayout)
+    } catch (e) {
+      console.error('[ExecuteGift] payout failed', e)
+      const msg = e?.message || '서버 오류가 발생했습니다.'
+      await dialog.alert({ title: '자금집행 실패', message: msg, okText: '확인' })
+      return false   // step='done' 으로 진행하지 않음 → 호출자가 setStep('done') 건너뜀
+    }
+
+    // ─── 클라 store 갱신 (기존 UI 호환) ───────────────
     addTransaction({
       type: 'gift',
-      fromUserId: 'me_juda_kim',
-      fromUserName: '김주다',
+      fromUserId: me?.userId || 'me_juda_kim',
+      fromUserName: me?.name || '김주다',
       fromUserType: 'personal',
       recipient,
       amount: amtNum,
@@ -183,7 +231,11 @@ export default function ExecuteGift() {
       dealStatus: 'completed',
       statusLabel: '지급 완료',
       myAction: null,
+      // 서버 연계 정보
+      serverPayoutId: serverPayout?.id,
+      serverThreadId: serverPayout?.threadId,
     })
+    return true
   }
 
   // ─────────────────────────────────────────────
@@ -435,8 +487,18 @@ export default function ExecuteGift() {
       summaryLeft={fill(t('execGift.pin.summary'), { name: recipient.name })}
       summaryRight={`${amtFmt}원`}
       onBack={goBack}
-      onComplete={() => { pushToStore(); setStep('done') }}
-      onFaceID={() => { pushToStore(); setStep('done') }}
+      onComplete={async (pin) => {
+        const ok = await pushToStore(pin)
+        if (ok) setStep('done')
+      }}
+      onFaceID={async () => {
+        // Face ID 흐름은 다음 단계 — 우선 PIN 만 지원
+        await dialog.alert({
+          title: 'Face ID 준비 중',
+          message: 'Face ID 자금집행은 곧 지원됩니다.\nPIN으로 진행해주세요.',
+          okText: '확인',
+        })
+      }}
       headerGrad={theme.headerGrad}
       exitTo="/home"
     />

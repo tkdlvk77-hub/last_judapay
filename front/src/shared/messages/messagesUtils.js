@@ -70,6 +70,163 @@ export function adaptStoreThread(t) {
   }
 }
 
+// ─── typeLabel → 카드 톤(배경/글자색) 매핑 ───
+//   서버가 typeLabel(한글) 만 보낼 때 색을 결정.
+//   TYPE_TONE_BY_KIND 는 key 기반이라 별도 매핑 둔다.
+const LABEL_TONE = [
+  { match: /선물|용돈/,        bg: '#FCE7F3', color: '#9D174D' },
+  { match: /외주/,             bg: '#EDF3FA', color: '#2D6BB0' },
+  { match: /대여|차용/,        bg: '#FFF4E0', color: '#C8821A' },
+  { match: /투자|엔젤/,        bg: '#E6F5EF', color: '#2A7D5E' },
+  { match: /임대|부동산|월세/, bg: '#EDF3FA', color: '#2D6BB0' },
+  { match: /상여/,             bg: '#E6F5EF', color: '#085041' },
+  { match: /경조|축의|부의/,   bg: '#FCE7F3', color: '#9D174D' },
+  { match: /지원/,             bg: '#E6F5EF', color: '#2A7D5E' },
+  { match: /기타소득/,         bg: '#EEE8F7', color: '#5D2E92' },
+  { match: /급여/,             bg: '#E6F5EF', color: '#085041' },
+  { match: /세금|부가세/,      bg: '#FCEBEB', color: '#D94040' },
+  { match: /4대|보험/,         bg: '#EDF3FA', color: '#2D6BB0' },
+  { match: /생활/,             bg: '#FFF4E0', color: '#C8821A' },
+]
+
+function toneForLabel(label) {
+  if (!label) return { bg: '#F2EFE9', color: '#555550' }
+  for (const r of LABEL_TONE) if (r.match.test(label)) return { bg: r.bg, color: r.color }
+  return { bg: '#F2EFE9', color: '#555550' }
+}
+
+// ─── 서버 스레드 → THREADS 카드 형태 어댑터 ───
+//   서버 응답 (AppMessageController.threadToMap) 1건을 화면 표시용 카드로 변환.
+//   transaction 상세 메타는 클릭 후 별도 fetch 로 채운다 (Messages.jsx 의 serverChat).
+//   메시지 텍스트 패턴: "{typeLabel} {amount}원 ..." → typeLabel·amount 파싱.
+export function adaptServerThread(t) {
+  if (!t) return null
+  const lm = t.lastMessage || {}
+  const other = t.otherSide || {}
+  const name = other.name || '알 수 없음'
+
+  let lastMsgText = lm.text || ''
+  if (lastMsgText.startsWith('[진행 상태]')) {
+    lastMsgText = lastMsgText.replace('[진행 상태] ', '')
+  }
+
+  // "{typeLabel} {N,NNN}원 ..." 패턴에서 typeLabel + 금액 파싱
+  //   ex) "용돈/선물 50,000원 입금 완료" → typeLabel='용돈/선물', amount=50000
+  //   ex) "외주비 1,200,000원 외부링크 발송 (인증 대기)" → typeLabel='외주비', amount=1200000
+  const m = (lm.text || '').match(/^(.+?)\s+([\d,]+)\s*원/)
+  const typeLabel    = m ? m[1].trim() : '자금집행'
+  const parsedAmount = m ? Number(m[2].replace(/,/g, '')) : 0
+  const safeTotal    = parsedAmount > 0 ? parsedAmount : 1
+  const tone         = toneForLabel(typeLabel)
+
+  return {
+    id:           t.threadKey || t.threadId,
+    name,
+    initial:      name.charAt(0) || '?',
+    emoji:        null,
+    avatarBg:     '#EEF2FF',
+    avatarFg:     '#4338CA',
+    type:         typeLabel,
+    typeBg:       tone.bg,
+    typeColor:    tone.color,
+    amount:       parsedAmount,
+    balance:      0,                     // 통지형 자금집행은 즉시 완결 → 잔액 0
+    lastMsg:      lastMsgText,
+    time:         formatThreadTime(lm.createdAt),
+    unread:       0,
+    status:       'normal',
+    statusLabel:  '완료',
+    statusBg:     '#E6F5EF',
+    statusColor:  '#2A7D5E',
+    totalExecuted: parsedAmount,         // 100% 표시
+    totalAmount:   safeTotal,
+    role:         '수령인',
+    msgCat:       '외부',
+    txCat:        '거래',
+    _fromServer:  true,
+    _threadId:    t.threadId,
+    _payoutId:    lm.txId,
+    _createdAt:   lm.createdAt,
+  }
+}
+
+// ─── 서버 메시지 배열 → ChatRoom chat.messages 형태 어댑터 ───
+//   서버 ChatMessage 의 payload(JSON string) 를 parse 해서
+//   adaptStoreChat 과 동일한 메시지 객체 모양으로 만든다.
+export function adaptServerMessages(serverMessages) {
+  if (!Array.isArray(serverMessages)) return { messages: [], fdsAlert: null }
+  let id = 1
+  const messages = serverMessages.map(m => {
+    const date = (m.createdAt || '').slice(0, 10).replaceAll('-', '.')
+    const d = new Date(m.createdAt)
+    const time = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+    const payload = parseJsonSafe(m.payload)
+
+    if (m.msgType === 'contract') {
+      return { id: id++, from: 'system', type: 'contract', date, time,
+        contract: {
+          title:     payload.title     || '',
+          executor:  payload.executor  || '',
+          recipient: payload.recipient || '',
+          amount:    payload.amount    || 0,
+          type:      payload.typeLabel || '',
+          mccAllowed: [], mccBlocked: [],
+          expires:   payload.expires   || '',
+          milestones: [],
+          signed:    !!payload.signed,
+        } }
+    }
+    if (m.msgType === 'payment') {
+      return { id: id++, from: 'system', type: 'payment', date, time,
+        payment: {
+          merchant: payload.label    || '',
+          amount:   payload.amount   || 0,
+          status:   'done',
+          mcc:      payload.mccLabel || '',
+          code:     payload.milestoneId || '',
+        } }
+    }
+    if (m.msgType === 'progress') {
+      return { id: id++, from: 'system', type: 'storeProgress', date, time,
+        progress: {
+          statusLabel: payload.statusLabel || (m.text || '').replace('[진행 상태] ', ''),
+          actionLabel: null,
+        } }
+    }
+    if (m.msgType === 'simple') {
+      // payload 우선 — 신규 메시지는 typeLabel/amount/reason/recipient 가 들어있음
+      // (기존 메시지는 빈 payload 일 수 있어 text 파싱 fallback)
+      const am  = (m.text || '').match(/^(.+?)\s+([\d,]+)\s*원/)
+      const fbLabel  = am ? am[1].trim() : ''
+      const fbAmount = am ? Number(am[2].replace(/,/g, '')) : 0
+      return { id: id++, from: 'system', type: 'storeNotification', date, time,
+        notification: {
+          icon:      m.icon || '💸',
+          typeKey:   'gift',
+          typeLabel: payload.typeLabel || fbLabel,
+          merchant:  payload.recipient || '',
+          amount:    payload.amount    ?? fbAmount,
+          mcc:       payload.reason    || '',   // 메모를 mcc 자리에 — ChatRoom 카드 부제로 표시됨
+          status:    payload.status === 'waiting' ? 'waiting' : 'done',
+        } }
+    }
+    if (m.msgType === 'user') {
+      return { id: id++,
+        from: m.senderUserId ? 'me' : 'system',   // 본인 메시지 표시 (확장 가능)
+        text: m.text || '',
+        date, time }
+    }
+    return { id: id++, from: 'system', text: m.text || '', date, time }
+  })
+  return { messages, fdsAlert: null }
+}
+
+function parseJsonSafe(s) {
+  if (!s) return {}
+  if (typeof s === 'object') return s
+  try { return JSON.parse(s) } catch { return {} }
+}
+
 // ─── 시간 표시 ("14:22" / "어제" / "3일 전") ───
 export function formatThreadTime(iso) {
   if (!iso) return ''

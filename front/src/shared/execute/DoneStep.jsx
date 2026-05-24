@@ -78,7 +78,7 @@ export default function DoneStep({
           textAlign:'center',
         }}>
           {/* 우측 상단 X 버튼 — 모달 없이 바로 exitTo로 (이미 완료된 상태) */}
-          <button onClick={() => navigate(exitTo)}
+          <button onClick={() => window.location.assign(exitTo)}
             aria-label="Close"
             style={{
               position:'absolute', top:'12px', right:'12px',

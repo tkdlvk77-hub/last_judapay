@@ -13,7 +13,8 @@ import { useStoreData } from '../hooks/useStoreData'
 import { getAllApprovalMsgs } from './approvalMessageBus'
 
 import { THREADS, CHATS } from './messages/messagesData'
-import { getCurrentUserId, adaptStoreThread, adaptStoreChat, shortStatusLabel } from './messages/messagesUtils'
+import { getCurrentUserId, adaptStoreThread, adaptStoreChat, shortStatusLabel, adaptServerThread, adaptServerMessages } from './messages/messagesUtils'
+import { listThreads as listServerThreads, listMessagesByThread } from '../services/messages'
 import DetailScreen from './messages/DetailScreen'
 import { useStepHistory } from '../hooks/useStepHistory'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
@@ -140,8 +141,33 @@ export default function Messages() {
   )
   const storeThreads = storeThreadGroups.map(adaptStoreThread).filter(Boolean)
 
-  const baseThreads = [...storeThreads, ...THREADS]
-    .filter(t => !(userType === 'personal' && t.id === 'approval'))
+  // ── 서버 스레드 (로그인 시) ──
+  //   try/catch 강화 + 빈 응답/예상 외 응답 가드 + 어댑터 에러 격리
+  const [serverThreads, setServerThreads] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const raw = await listServerThreads()
+        // 응답이 배열이 아닐 수 있음 (envelope 미언랩 등) — 방어
+        const items = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])
+        const adapted = items
+          .map(t => { try { return adaptServerThread(t) } catch (e) { console.warn('[Messages] adapt fail', e, t); return null } })
+          .filter(Boolean)
+        if (!cancelled) setServerThreads(adapted)
+      } catch (e) {
+        console.warn('[Messages] listServerThreads failed', e?.message)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // 서버 스레드 우선 + 클라 store + 정적 데모 순으로 합침
+  // (같은 threadKey 가 양쪽에 있으면 서버 우선)
+  const seenKeys = new Set(serverThreads.map(t => t?.id).filter(Boolean))
+  const dedupedStoreThreads = storeThreads.filter(t => t && !seenKeys.has(t.id))
+  const baseThreads = [...serverThreads, ...dedupedStoreThreads, ...THREADS]
+    .filter(t => t && !(userType === 'personal' && t.id === 'approval'))
   const allThreads = baseThreads.sort((a, b) => {
     if ((a.unread > 0) !== (b.unread > 0)) return a.unread > 0 ? -1 : 1
     if (a._fromStore && b._fromStore) return new Date(b._createdAt) - new Date(a._createdAt)
@@ -188,8 +214,37 @@ export default function Messages() {
     }
   })
 
+  // ── 서버 스레드 클릭 시 메시지 비동기 fetch ──
+  //   activeThread 가 _fromServer 스레드면 listMessagesByThread() → 어댑터로 변환 → state
+  const [serverChats, setServerChats] = useState({})  // { [threadId]: { messages, fdsAlert } }
+  useEffect(() => {
+    if (!thread || !thread._fromServer) return
+    const threadId = thread._threadId
+    if (!threadId || serverChats[threadId]) return    // 이미 받아둔 거면 스킵
+    let cancelled = false
+    ;(async () => {
+      try {
+        const items = await listMessagesByThread(threadId)
+        if (!cancelled) {
+          setServerChats(prev => ({ ...prev, [threadId]: adaptServerMessages(items) }))
+        }
+      } catch (e) {
+        console.warn('[Messages] listMessagesByThread failed', e?.message)
+        // 실패해도 빈 chat 으로라도 화면 진입 가능하게
+        if (!cancelled) {
+          setServerChats(prev => ({ ...prev, [threadId]: { messages: [], fdsAlert: null } }))
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [thread?._fromServer, thread?._threadId])
+
   const chat = (() => {
     if (!thread) return null
+    if (thread._fromServer) {
+      // fetch 완료 전엔 임시 빈 chat 으로 ChatRoom 정상 마운트
+      return serverChats[thread._threadId] || { messages: [], fdsAlert: null }
+    }
     if (thread._fromStore) return adaptStoreChat(thread.id)
     if (thread.id === 'approval') {
       const base = CHATS['approval'] || { messages:[], fdsAlert:null }

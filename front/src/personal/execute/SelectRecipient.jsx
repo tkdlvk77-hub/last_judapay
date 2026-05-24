@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { listRecentRecipients, lookupUser } from '../../services/recipient'
 import DarkHeader from '../../components/DarkHeader'
 import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS, GRADIENTS, FUND_COLORS } from '../../design/tokens'
@@ -82,6 +83,22 @@ export default function SelectRecipient() {
   const [phoneInput, setPhoneInput] = useState('')
   const [idInput, setIdInput] = useState('')
   const [idSearchResult, setIdSearchResult] = useState(null)
+  const [searching, setSearching] = useState(false)
+
+  // ── 서버 최근 거래 (있으면 데모 위에 우선 표시) ──
+  const [serverRecents, setServerRecents] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const items = await listRecentRecipients({ purpose })
+        if (!cancelled) setServerRecents(Array.isArray(items) ? items : [])
+      } catch (e) {
+        console.warn('[SelectRecipient] listRecentRecipients failed', e?.message)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [purpose])
 
   const handleBack = () => {
     if (mode !== 'list') {
@@ -108,29 +125,122 @@ export default function SelectRecipient() {
   const phoneDigits = phoneInput.replace(/\D/g, '')
   const phoneValid = phoneDigits.length >= 10 && phoneDigits.length <= 11
 
-  const handleIdSearch = () => {
-    if (!idInput.trim()) return
-    const known = ['hyungho_lee', 'mom_kim', 'park_creator']
-    if (known.includes(idInput.toLowerCase().replace('@', ''))) {
-      setIdSearchResult({
-        status:'found',
-        recipient: {
-          id:`id-${idInput}`,
-          name: idInput.startsWith('@') ? idInput.slice(1) : idInput,
-          handle: idInput.startsWith('@') ? idInput : `@${idInput}`,
-          phone:'@'+idInput.replace('@',''),
-          initial: '@',
-          avatarBg: theme.brand, avatarFg:'#FFFFFF',
-          verified:true,
-          kyc:'KYC 2단계',
-        },
-      })
-    } else {
-      setIdSearchResult({ status:'notfound' })
+  // ── 주다페이 ID 검색 — 서버 lookup ──
+  const handleIdSearch = async () => {
+    if (!idInput.trim() || searching) return
+    setSearching(true)
+    try {
+      const res = await lookupUser({ handle: idInput.trim() })
+      if (res?.found && res.user) {
+        const u = res.user
+        const handle = idInput.startsWith('@') ? idInput : `@${idInput}`
+        setIdSearchResult({
+          status: 'found',
+          recipient: {
+            id:       `id-${u.userId}`,
+            userId:   u.userId,
+            name:     u.name || idInput,
+            handle,
+            phone:    u.phone || handle,
+            initial:  u.initial || (u.name?.charAt(0) ?? '@'),
+            avatarBg: theme.brand,
+            avatarFg: '#FFFFFF',
+            verified: true,
+            isBusiness: !!u.isBusiness,
+            kyc:      'KYC 2단계',
+          },
+        })
+      } else {
+        setIdSearchResult({ status: 'notfound' })
+      }
+    } catch (e) {
+      console.warn('[SelectRecipient] lookup by id failed', e?.message)
+      setIdSearchResult({ status: 'notfound' })
+    } finally {
+      setSearching(false)
     }
   }
 
-  const filtered = RECENT_RECIPIENTS.filter(r => {
+  // ── 휴대폰 번호로 — 가입자 자동 확인 후 진행 ──
+  const handlePhoneNext = async () => {
+    if (!phoneValid || searching) return
+    setSearching(true)
+    try {
+      const res = await lookupUser({ phone: phoneInput })
+      const u = res?.found ? res.user : null
+      handleSelect({
+        id:       u ? `id-${u.userId}` : `phone-${phoneInput}`,
+        userId:   u?.userId || null,
+        name:     u?.name || phoneInput,
+        phone:    phoneInput,
+        initial:  u?.initial || (u?.name?.charAt(0) ?? '?'),
+        avatarBg: u ? theme.brand : COLORS.t4,
+        avatarFg: '#FFFFFF',
+        verified: !!u,
+        isBusiness: !!u?.isBusiness,
+        kyc:      u ? 'KYC 2단계' : '미가입 (확인 중)',
+        isNew:    !u,
+        via:      'phone',
+      })
+    } catch (e) {
+      console.warn('[SelectRecipient] lookup by phone failed', e?.message)
+      // 실패해도 비가입자 모드로 그대로 진행
+      handleSelect({
+        id:`phone-${phoneInput}`, name: phoneInput, phone: phoneInput,
+        initial:'?', avatarBg: COLORS.t4, avatarFg:'#FFFFFF',
+        verified:false, kyc:'미가입 (확인 중)', isNew:true, via:'phone',
+      })
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  // ── 서버 카드 → 화면 카드 형태로 정규화 ──
+  function normalizeServerRecipient(s) {
+    return {
+      id:           s.id || s.userId || `phone-${s.phone}`,
+      userId:       s.userId || null,
+      name:         s.name || '알 수 없음',
+      phone:        s.phone || '',
+      initial:      s.initial || (s.name?.charAt(0) ?? '?'),
+      emoji:        null,
+      avatarBg:     s.avatarBg || '#7C3AED',
+      avatarFg:     s.avatarFg || '#FFFFFF',
+      verified:     !!s.verified,
+      isBusiness:   !!s.isBusiness,
+      lastUsedFor:  s.lastUsedFor || 'gift',
+      lastUsedAt:   formatRecentTime(s.lastUsedAt),
+      kyc:          s.verified ? 'KYC 2단계' : '미가입',
+      _fromServer:  true,
+    }
+  }
+
+  function formatRecentTime(iso) {
+    if (!iso) return ''
+    const now = new Date()
+    const then = new Date(iso)
+    const diffDay = Math.floor((now - then) / 86400000)
+    if (diffDay < 1) return '오늘'
+    if (diffDay < 2) return '어제'
+    if (diffDay < 7) return `${diffDay}일 전`
+    if (diffDay < 30) return `${Math.floor(diffDay/7)}주 전`
+    return `${Math.floor(diffDay/30)}개월 전`
+  }
+
+  // 서버 최근거래 + 데모 (서버 우선 + 중복 제거 by userId 또는 phone)
+  const seen = new Set()
+  const mergedRecents = [
+    ...serverRecents.map(normalizeServerRecipient),
+    ...RECENT_RECIPIENTS,
+  ].filter(r => {
+    const key = r.userId || r.phone?.replace(/[^0-9*]/g, '')
+    if (!key) return true
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+
+  const filtered = mergedRecents.filter(r => {
     if (!query.trim()) return true
     const q = query.replace(/[-\s]/g, '').toLowerCase()
     return r.name.toLowerCase().includes(q) || r.phone.replace(/[-*\s]/g, '').includes(q)
@@ -428,28 +538,21 @@ export default function SelectRecipient() {
             background: COLORS.bgCard,
           }}>
             <button
-              onClick={() => phoneValid && handleSelect({
-                id:`phone-${phoneInput}`,
-                name: phoneInput,
-                phone: phoneInput,
-                initial: '?',
-                avatarBg: COLORS.t4, avatarFg:'#FFFFFF',
-                verified: false,
-                kyc: '미가입 (확인 중)',
-                isNew: true, via:'phone',
-              })}
-              disabled={!phoneValid}
+              onClick={handlePhoneNext}
+              disabled={!phoneValid || searching}
               style={{
                 width:'100%', height:'52px',
-                background: phoneValid ? theme.brand : COLORS.bgMuted,
-                color: phoneValid ? '#fff' : COLORS.t4,
+                background: (phoneValid && !searching) ? theme.brand : COLORS.bgMuted,
+                color: (phoneValid && !searching) ? '#fff' : COLORS.t4,
                 border:'none', borderRadius: RADIUS.md,
                 fontSize:'15px', fontWeight:700,
-                cursor: phoneValid ? 'pointer' : 'default',
+                cursor: (phoneValid && !searching) ? 'pointer' : 'default',
                 fontFamily:'inherit',
-                boxShadow: phoneValid ? SHADOWS.buttonBrand : 'none',
+                boxShadow: (phoneValid && !searching) ? SHADOWS.buttonBrand : 'none',
               }}>
-              {phoneValid ? '다음 (자금 집행)' : '휴대폰 번호를 입력하세요'}
+              {searching ? '가입 여부 확인 중…'
+                : phoneValid ? '다음 (자금 집행)'
+                : '휴대폰 번호를 입력하세요'}
             </button>
           </div>
         </div>
@@ -500,18 +603,18 @@ export default function SelectRecipient() {
 
               <button
                 onClick={handleIdSearch}
-                disabled={!idInput.trim()}
+                disabled={!idInput.trim() || searching}
                 style={{
                   width:'100%', height:'46px',
-                  background: idInput.trim() ? theme.brand : COLORS.bgMuted,
-                  color: idInput.trim() ? '#fff' : COLORS.t4,
+                  background: (idInput.trim() && !searching) ? theme.brand : COLORS.bgMuted,
+                  color: (idInput.trim() && !searching) ? '#fff' : COLORS.t4,
                   border:'none', borderRadius: RADIUS.md,
                   fontSize:'13px', fontWeight:700,
-                  cursor: idInput.trim() ? 'pointer' : 'default',
+                  cursor: (idInput.trim() && !searching) ? 'pointer' : 'default',
                   fontFamily:'inherit', marginBottom:'18px',
-                  boxShadow: idInput.trim() ? SHADOWS.buttonBrand : 'none',
+                  boxShadow: (idInput.trim() && !searching) ? SHADOWS.buttonBrand : 'none',
                 }}>
-                검색하기
+                {searching ? '검색 중…' : '검색하기'}
               </button>
 
               {/* 검색 결과 — found */}
