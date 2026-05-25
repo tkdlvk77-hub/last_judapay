@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { listRecentRecipients, lookupUser } from '../../services/recipient'
+import { session } from '../../services/api'
 import DarkHeader from '../../components/DarkHeader'
 import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS, GRADIENTS, FUND_COLORS } from '../../design/tokens'
@@ -227,11 +228,13 @@ export default function SelectRecipient() {
     return `${Math.floor(diffDay/30)}개월 전`
   }
 
-  // 서버 최근거래 + 데모 (서버 우선 + 중복 제거 by userId 또는 phone)
+  // 서버 최근거래 + 데모 (로그인 시 데모는 숨김, 비로그인 시만 폴백)
+  //   - 다른 화면(Alerts/Messages)과 동일 패턴: 로그인 = 실데이터만, 비로그인 = 데모 폴백
+  const isAuthed = !!session.user
   const seen = new Set()
   const mergedRecents = [
     ...serverRecents.map(normalizeServerRecipient),
-    ...RECENT_RECIPIENTS,
+    ...(isAuthed ? [] : RECENT_RECIPIENTS),
   ].filter(r => {
     const key = r.userId || r.phone?.replace(/[^0-9*]/g, '')
     if (!key) return true

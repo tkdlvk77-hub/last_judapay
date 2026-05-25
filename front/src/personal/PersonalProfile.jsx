@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../design/tokens'
 import { getAccountTheme } from '../design/accountTokens'
+import { useUser } from '../contexts/UserContext'
 
 // ─── 데모 데이터 ──────────────────────────────────────────
 const USER = {
@@ -359,6 +360,10 @@ function DealTab({ theme }) {
 export default function PersonalProfile() {
   const navigate = useNavigate()
   const theme    = getAccountTheme()
+  const { currentUser } = useUser()
+  // 실명 우선 — 로그인 사용자 이름, 없으면 데모 USER.name
+  const liveName    = currentUser?.name || USER.name
+  const liveInitial = (currentUser?.name?.charAt(0)) || USER.initial
 
   // ── refs ──
   const scrollRef  = useRef(null)
@@ -419,7 +424,7 @@ export default function PersonalProfile() {
               내 프로필
             </span>
             <span ref={title2Ref} style={{ position:'absolute', inset:0, fontSize:'15px', fontWeight:700, color:'#fff', display:'flex', alignItems:'center', opacity:0 }}>
-              {USER.name}
+              {liveName}
             </span>
           </span>
         </div>
@@ -428,12 +433,12 @@ export default function PersonalProfile() {
         <div style={{ background: NAV_COLOR, padding:'12px 20px 20px', display:'flex', alignItems:'center', gap:'16px' }}>
           <div style={{ position:'relative', flexShrink:0 }}>
             <div style={{ width:'68px', height:'68px', borderRadius:'20px', background:'rgba(255,255,255,0.2)', border:'2.5px solid rgba(255,255,255,0.4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'28px', fontWeight:800, color:'#fff' }}>
-              {USER.initial}
+              {liveInitial}
             </div>
             <div style={{ position:'absolute', bottom:'-2px', right:'-2px', width:'14px', height:'14px', borderRadius:'50%', background:'#34D399', border:'2.5px solid white' }} />
           </div>
           <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:'22px', fontWeight:800, color:'#fff', letterSpacing:'-0.5px', marginBottom:'5px' }}>{USER.name}</div>
+            <div style={{ fontSize:'22px', fontWeight:800, color:'#fff', letterSpacing:'-0.5px', marginBottom:'5px' }}>{liveName}</div>
             <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'4px' }}>
               <span style={{ padding:'3px 9px', background:'rgba(52,211,153,0.25)', color:'#D1FAE5', borderRadius:'8px', fontSize:'10px', fontWeight:700, border:'1px solid rgba(52,211,153,0.3)' }}>
                 {USER.status}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { PhoneShell } from '../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../design/tokens'
@@ -6,6 +6,8 @@ import { getAccountTheme } from '../design/accountTokens'
 import { useUser } from '../contexts/UserContext'
 import MccBlock, { DEFAULT_MCC } from './execute/MccBlock'
 import { useStepHistory } from '../hooks/useStepHistory'
+import { getPayment } from '../services/payment'
+import { session } from '../services/api'
 
 // ─── MCC 설정 풀스크린 ────────────────────────────────────
 function MCCScreen({ mccItems, onChange, onClose, exiting }) {
@@ -52,6 +54,38 @@ function MCCScreen({ mccItems, onChange, onClose, exiting }) {
       </div>
     </div>
   )
+}
+
+// ─── 서버 Transaction → 화면이 기대하는 payment 형태로 매핑 ──
+// 서버 응답: { id, transactionNo, organizationId, cardId, programId, type,
+//             status, amount, currency, merchantName, merchantMcc,
+//             fdsRiskScore, fdsStatus, idempotencyKey, metadata,
+//             requestedAt, approvedAt, settledAt, createdAt }
+function adaptServerPayment(tx) {
+  if (!tx) return null
+  const isBlocked = (tx.fdsStatus && tx.fdsStatus !== 'NONE') || tx.status === 'BLOCKED'
+  return {
+    id:         tx.id,
+    status:     isBlocked ? 'blocked' : 'normal',
+    amount:     Number(tx.amount || 0),
+    merchant:   tx.merchantName || '결제',
+    mcc:        tx.merchantMcc ? `${tx.merchantMcc} · 카드결제` : '카드결제',
+    mccCode:    tx.merchantMcc || '-',
+    mccBlocked: isBlocked,
+    timestamp:  tx.approvedAt || tx.requestedAt || tx.createdAt || '',
+    walletLabel: 'MY 지갑',
+    walletSub:   tx.status === 'APPROVED' ? '결제 완료' : (tx.status || ''),
+    receiver:    tx.merchantName || '',
+    category:    null,
+    categoryAuto: false,
+    blockReason: isBlocked ? `FDS 차단 — risk=${tx.fdsRiskScore ?? 0}` : null,
+    blockRecord: isBlocked ? '감사 로그 5년 보관' : null,
+    allowedMcc:  [{ code: '전체 허용', num: '*', allowed: true }],
+    // ── 권한 분리용 메타 ──
+    userId:       tx.userId,           // 이 결제를 한 사용자 (개인 cardless 경로일 때 채워짐)
+    organizationId: tx.organizationId,
+    _fromServer: true,
+  }
 }
 
 // ─── 데모 데이터 ──────────────────────────────────────────
@@ -187,9 +221,44 @@ export default function PaymentDetail() {
   const navigate = useNavigate()
   const _pdRole  = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('bizRole') || '' : ''
   const isViewer = _pdRole === 'viewer'
+  const myUserId = session.user?.userId
   const location = useLocation()
   const { userType } = useUser()
-  const payment = PAYMENTS[id] || PAYMENTS.p1
+  // ── 서버 데이터 fetch (로그인된 경우만) ───────────
+  //   id 가 UUID 형식이면 서버에서 가져오고, 짧은 데모 id ('p1', 'p2' 등) 면 데모 폴백.
+  const isUuidId = id && /^[0-9a-fA-F-]{30,}$/.test(id)
+  const [serverPayment, setServerPayment] = useState(null)
+  const [serverErr,     setServerErr]     = useState(null)
+  const [serverLoading, setServerLoading] = useState(isUuidId && !!session.user)
+  useEffect(() => {
+    if (!session.user || !id) return
+    if (!isUuidId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const tx = await getPayment(id)
+        if (!cancelled && tx) setServerPayment(adaptServerPayment(tx))
+      } catch (e) {
+        console.warn('[PaymentDetail] getPayment failed', e?.message, e?.code)
+        if (!cancelled) setServerErr({ message: e?.message, code: e?.code, status: e?.status })
+      } finally {
+        if (!cancelled) setServerLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [id, isUuidId])
+  // UUID 인데 fetch 안 됐으면 데모 폴백 안 함 (이상한 데모 카드 보이는 것 방지)
+  //   _resolved = 실제로 표시할 데이터 있는지 여부. null 이면 early-return UI.
+  //   payment    = 항상 안전한 객체 (모든 hooks 호출 + .field 접근 안전 보장).
+  const _resolvedPayment = serverPayment || (!isUuidId ? (PAYMENTS[id] || PAYMENTS.p1) : null)
+  const payment = _resolvedPayment || {
+    id, status: 'normal', amount: 0, merchant: '', mcc: '-', mccCode: '-',
+    mccBlocked: false, timestamp: '', walletLabel: '', walletSub: '',
+    receiver: '', category: null, categoryAuto: false, allowedMcc: [],
+  }
+
+  // 본인 결제 — MCC 설정 버튼 숨김 (지갑 발신자만 권한)
+  const _isMyPayment = serverPayment?._fromServer && serverPayment?.userId === myUserId
 
   const isBlocked  = payment.status === 'blocked'
   const isIncoming = payment.status === 'incoming'
@@ -228,6 +297,41 @@ export default function PaymentDetail() {
   const [claimMsg, setClaimMsg]   = useState('소명 부탁드립니다.')
   const [msgEdited, setMsgEdited] = useState(false)
   const [toast, setToast]         = useState(null)
+
+  // ─────────────────────────────────────────────────────────
+  // 모든 hooks 호출 완료 — 여기서 early-return 으로 로딩/에러/권한없음 UI 분기.
+  //   (Rules of Hooks: hooks 는 항상 같은 순서로 호출되어야 함)
+  // ─────────────────────────────────────────────────────────
+  if (isUuidId && !_resolvedPayment) {
+    return (
+      <PhoneShell>
+        <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'0 40px' }}>
+          {serverLoading ? (
+            <div style={{ fontSize:'13px', color: COLORS.t3 }}>결제 정보를 불러오는 중…</div>
+          ) : serverErr?.code === 'ACCESS_DENIED' ? (
+            <>
+              <div style={{ fontSize:'14px', color: COLORS.t3, marginBottom:'8px' }}>조회 권한이 없는 결제입니다</div>
+              <div style={{ fontSize:'11px', color: COLORS.t4, marginBottom:'14px', textAlign:'center', lineHeight:1.5 }}>
+                본인 결제 또는<br/>본인이 보낸 권한자금에서 발생한 결제만 조회할 수 있어요.
+              </div>
+              <button onClick={() => navigate(-1)}
+                style={{ padding:'12px 24px', background: theme.brandDark, color:'#fff', border:'none', borderRadius:'12px', fontSize:'13px', fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>
+                돌아가기
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize:'14px', color: COLORS.t3, marginBottom:'14px' }}>결제를 찾을 수 없어요</div>
+              <button onClick={() => navigate('/alerts')}
+                style={{ padding:'12px 24px', background: theme.brandDark, color:'#fff', border:'none', borderRadius:'12px', fontSize:'13px', fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>
+                알림으로 돌아가기
+              </button>
+            </>
+          )}
+        </div>
+      </PhoneShell>
+    )
+  }
 
   const autoMsg = (c, e) =>
     c && e ? '소명 및 영수증 증빙 부탁드립니다.'
@@ -450,7 +554,8 @@ export default function PaymentDetail() {
               </div>
             )}
 
-            {/* ── MCC 허용 정책 ── */}
+            {/* ── MCC 허용 정책 — 본인 결제는 숨김 (정책은 발신자 권한) ── */}
+            {!_isMyPayment && (
             <div style={CARD}>
               <div style={{ padding:'13px 16px 10px', borderBottom:'1px solid #F0F1F3' }}>
                 <div style={{ fontSize:'10px', fontWeight:700, color:'#9CA3AF', letterSpacing:'0.8px' }}>POLICY</div>
@@ -491,21 +596,34 @@ export default function PaymentDetail() {
                 </div>
               ))}
             </div>
+            )}
 
           </div>
         </div>
 
-        {/* ── 하단 버튼 ── */}
+        {/* ── 하단 버튼 ──
+            본인 결제(_isMyPayment):
+              · 차단된 결제   → 소명 요청 (1버튼 가로 꽉)
+              · 정상 결제     → 닫기 (1버튼 가로 꽉)
+            그 외 (발신자/조직):
+              · 소명 요청 + MCC 설정 (2버튼)
+        */}
+        {(() => {
+          // 표시할 버튼 결정
+          const showClaim   = (_isMyPayment && isBlocked) || !_isMyPayment
+          const showMccBtn  = !_isMyPayment
+          const showClose   = _isMyPayment && !isBlocked
+          const buttonCount = [showClaim, showMccBtn, showClose].filter(Boolean).length
+          return (
         <div style={{
           padding:'12px 14px 28px',
           borderTop:'1px solid #E9EAEC',
           background:'#FFFFFF',
           display:'grid',
-          gridTemplateColumns: (isPersonal && isMinePayment) ? '1fr' : '1fr 1fr',
+          gridTemplateColumns: buttonCount === 1 ? '1fr' : '1fr 1fr',
           gap:'8px',
         }}>
-          {/* 개인 + 내 결제 → 닫기 버튼만 */}
-          {isPersonal && isMinePayment ? (
+          {showClose ? (
             <button onClick={() => navigate(-1)}
               style={{
                 height:'50px', background:'#F4F5F7', color:'#374151',
@@ -521,7 +639,8 @@ export default function PaymentDetail() {
             </button>
           ) : (
             <>
-              {/* 소명 요청 — viewer는 잠금 */}
+              {/* 소명 요청 — 본인 결제는 차단 시만, 그 외는 항상 */}
+              {showClaim && (
               <button
                 onClick={() => {
                   if (isExternalPayment) {
@@ -542,26 +661,31 @@ export default function PaymentDetail() {
                 </svg>
                 {isViewer ? '🔒 소명 요청' : '소명 요청'}
               </button>
-              {/* MCC 설정 */}
-              <button onClick={() => !isViewer && setShowMCC(true)} disabled={isViewer} title={isViewer ? "조회 전용 권한" : undefined}
-                style={{
-                  height:'50px',
-                  background: theme.activeBtnGrad || theme.headerGrad || '#1D4ED8',
-                  color:'#fff',
-                  border:'none', borderRadius:'12px',
-                  fontSize:'13px', fontWeight:700,
-                  cursor:'pointer', fontFamily:'inherit',
-                  display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
-                  boxShadow: theme.activeShadow || 'none',
-                }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
-                </svg>
-                MCC 설정
-              </button>
+              )}
+              {/* MCC 설정 — 본인이 한 결제는 노출 X (지갑 발신자만 MCC 변경 권한) */}
+              {showMccBtn && (
+                <button onClick={() => !isViewer && setShowMCC(true)} disabled={isViewer} title={isViewer ? "조회 전용 권한" : undefined}
+                  style={{
+                    height:'50px',
+                    background: theme.activeBtnGrad || theme.headerGrad || '#1D4ED8',
+                    color:'#fff',
+                    border:'none', borderRadius:'12px',
+                    fontSize:'13px', fontWeight:700,
+                    cursor:'pointer', fontFamily:'inherit',
+                    display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
+                    boxShadow: theme.activeShadow || 'none',
+                  }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+                  </svg>
+                  MCC 설정
+                </button>
+              )}
             </>
           )}
         </div>
+          )
+        })()}
       </div>
       {/* ── MCC 설정 풀스크린 ── */}
       {showMCC && (

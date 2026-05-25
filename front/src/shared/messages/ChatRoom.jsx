@@ -9,6 +9,7 @@ import { getAccountTheme } from '../../design/accountTokens'
 import { deleteThreadMemo } from './messagesData'
 import { NOTIF_TONE } from './messagesUtils'
 import { sendMessage as sendServerMessage, markThreadRead } from '../../services/messages'
+import { refreshUnread } from '../../services/unreadStore'
 
 // lazy import — 채팅방 진입 애니메이션(280ms) 동안 백그라운드 로드
 // 액션시트는 버튼 누를 때 필요하므로 진입 직후 렌더링 불필요
@@ -248,11 +249,12 @@ export default function ChatRoom({
       })
   }
 
-  // ── 스레드 진입 시 읽음 처리 ──
+  // ── 스레드 진입 시 읽음 처리 — 배지 즉시 동기화 ──
   useEffect(() => {
     if (!thread?._fromServer || !thread?._threadId) return
-    markThreadRead(thread._threadId).catch(err =>
-      console.warn('[ChatRoom] markRead failed:', err?.message))
+    markThreadRead(thread._threadId)
+      .then(() => refreshUnread())          // 서버 카운트 다시 가져와 BottomTab 갱신
+      .catch(err => console.warn('[ChatRoom] markRead failed:', err?.message))
   }, [thread?._threadId, thread?._fromServer])
 
   // ── 무한 스크롤: 위에 닿으면 과거 메시지 로드 ──
@@ -364,7 +366,12 @@ export default function ChatRoom({
               <div style={{ display:'flex', alignItems:'center', gap:'5px' }}>
                 <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#34D399' }} />
                 <span style={{ fontSize:'10px', color:'rgba(255,255,255,0.6)' }}>
-                  {thread.totalAmount.toLocaleString()}원
+                  {/* 서버 스레드 — 누적 N건 / X원, 데모 — 마지막 거래액 */}
+                  {(thread.cumulativeCount > 0 || thread.cumulativeAmount > 0) ? (
+                    `누적 ${thread.cumulativeCount || 0}건 · ${(thread.cumulativeAmount || 0).toLocaleString()}원`
+                  ) : (
+                    `${(thread.totalAmount || 0).toLocaleString()}원`
+                  )}
                 </span>
               </div>
             </div>
@@ -638,7 +645,12 @@ export default function ChatRoom({
                 /* ── store 통지형 카드 ── */
                 : msg.from === 'system' && msg.type === 'storeNotification' ? (() => {
                   const tone = NOTIF_TONE[msg.notification.typeKey] || NOTIF_TONE._default
-                  const isWaiting = msg.notification.status === 'waiting'
+                  const status   = msg.notification.status
+                  const isWaiting = status === 'waiting'
+                  const isBlocked = status === 'blocked'
+                  const badgeLabel = isBlocked ? '차단' : isWaiting ? '대기' : '완료'
+                  const badgeBg    = isBlocked ? '#FEE2E2' : isWaiting ? '#FFF4E0' : tone.badgeBg
+                  const badgeColor = isBlocked ? '#DC2626' : isWaiting ? '#C8821A' : tone.badgeText
                   return (
                     <div style={{ margin:'6px 0' }}>
                       <div style={{ background: tone.bg, border: `1px solid ${tone.border}`, borderRadius:'12px', padding:'10px 14px', display:'flex', alignItems:'center', gap:'10px' }}>
@@ -649,8 +661,8 @@ export default function ChatRoom({
                           </div>
                           <div style={{ fontSize:'10px', color: tone.sub, marginTop:'1px' }}>{msg.notification.mcc || '메모 없음'}</div>
                         </div>
-                        <span style={{ padding:'2px 8px', borderRadius:'8px', background: isWaiting ? '#FFF4E0' : tone.badgeBg, color: isWaiting ? '#C8821A' : tone.badgeText, fontSize:'10px', fontWeight:700, flexShrink:0 }}>
-                          {isWaiting ? '대기' : '완료'}
+                        <span style={{ padding:'2px 8px', borderRadius:'8px', background: badgeBg, color: badgeColor, fontSize:'10px', fontWeight:700, flexShrink:0 }}>
+                          {badgeLabel}
                         </span>
                       </div>
                       <div style={{ textAlign:'center', marginTop:'2px' }}>

@@ -15,6 +15,8 @@ import { getAllApprovalMsgs } from './approvalMessageBus'
 import { THREADS, CHATS } from './messages/messagesData'
 import { getCurrentUserId, adaptStoreThread, adaptStoreChat, shortStatusLabel, adaptServerThread, adaptServerMessages } from './messages/messagesUtils'
 import { listThreads as listServerThreads, listMessagesByThread } from '../services/messages'
+import { useUnreadBadges, refreshUnread } from '../services/unreadStore'
+import { session } from '../services/api'
 import DetailScreen from './messages/DetailScreen'
 import { useStepHistory } from '../hooks/useStepHistory'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
@@ -190,8 +192,14 @@ export default function Messages() {
   // (같은 threadKey 가 양쪽에 있으면 서버 우선)
   const seenKeys = new Set(serverThreads.map(t => t?.id).filter(Boolean))
   const dedupedStoreThreads = storeThreads.filter(t => t && !seenKeys.has(t.id))
-  const baseThreads = [...serverThreads, ...dedupedStoreThreads, ...THREADS]
-    .filter(t => t && !(userType === 'personal' && t.id === 'approval'))
+  // 로그인 시 데모(THREADS + storeThreads) 숨김 — 서버 스레드만 사용
+  //   비로그인 시는 데모 폴백 유지 (앱 데모 모드)
+  const useDemo = !session.user
+  const baseThreads = [
+    ...serverThreads,
+    ...(useDemo ? dedupedStoreThreads : []),
+    ...(useDemo ? THREADS : []),
+  ].filter(t => t && !(userType === 'personal' && t.id === 'approval'))
   const allThreads = baseThreads.sort((a, b) => {
     if ((a.unread > 0) !== (b.unread > 0)) return a.unread > 0 ? -1 : 1
     if (a._fromStore && b._fromStore) return new Date(b._createdAt) - new Date(a._createdAt)
@@ -223,7 +231,16 @@ export default function Messages() {
     return t.msgCat === filter
   })
 
-  const totalUnread = allThreads.reduce((s, t) => s + (t.unread || 0), 0)
+  // 카운트 소스 분기:
+  //   - 로그인 상태(session.user 있음) → 서버 카운터만 사용 (실제 데이터)
+  //   - 비로그인 → 데모 합산값으로 폴백
+  const isAuthed = !!session.user
+  const localUnread = allThreads.reduce((s, t) => s + (t.unread || 0), 0)
+  const badges = useUnreadBadges()
+  const totalUnread      = isAuthed ? (badges.messages    || 0) : localUnread
+  const totalThreadCount = isAuthed ? (badges.threadCount || 0) : allThreads.length
+  // 메시지 화면 마운트 시 서버 카운터 refresh
+  useEffect(() => { refreshUnread() }, [])
   const thread = allThreads.find(t => t.id === activeThread)
 
   // 처리센터 알림 메시지 병합
@@ -339,7 +356,7 @@ export default function Messages() {
         <PageTitle
           title="메시지"
           badge={totalUnread}
-          right={<span style={{ fontSize:'11px', color:'rgba(255,255,255,0.65)' }}>거래 관계 {allThreads.length}명</span>}
+          right={<span style={{ fontSize:'11px', color:'rgba(255,255,255,0.65)' }}>거래 관계 {totalThreadCount}명</span>}
         />
         <FilterChips dark value={filter} onChange={setFilter} items={filterItems} />
         <div style={{ padding:'8px 16px 4px' }}>

@@ -1,7 +1,9 @@
+import { useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useUser } from '../contexts/UserContext'
 import { COLORS } from '../design/tokens'
 import { getAccountTheme } from '../design/accountTokens'
+import { useUnreadBadges, refreshUnread } from '../services/unreadStore'
 
 const HomeIcon = (active, brand) => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill={active ? brand : 'none'} stroke={active ? brand : COLORS.t4} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -56,17 +58,16 @@ const businessTabs = [
   { id:'more',    label:'더보기',   path:'/more',          icon: MoreIcon, badgeKey: null },
 ]
 
-// 임시 알림 카운트 (실제는 Context에서)
-const BADGES = {
-  messages: 2,
-  alerts: 0, // 알림 탭은 dot만
-}
-
 export default function BottomTab() {
   const navigate = useNavigate()
   const location = useLocation()
   const { userType } = useUser()
   const theme = getAccountTheme()
+
+  // 서버 미읽음 카운트 — STOMP 로 자동 동기화
+  const badges = useUnreadBadges()
+  // 마운트 시 1회 최신화 (로그인 안 됐으면 0으로 떨어짐)
+  useEffect(() => { refreshUnread() }, [])
 
   if (!userType) return null
 
@@ -88,8 +89,9 @@ export default function BottomTab() {
     }}>
       {tabs.map((tab) => {
         const active = isActive(tab)
-        const badge = tab.badgeKey ? BADGES[tab.badgeKey] : null
-        const showDot = tab.id === 'alert' && !active // 알림 미읽음 표시
+        // 메시지/알림 모두 같은 store 에서 — 숫자 배지로 통일
+        const badge = tab.badgeKey ? (badges[tab.badgeKey] || 0) : 0
+        const showDot = false      // 더 이상 dot 사용 안 함 (배지 숫자로 통일)
         return (
           <button
             key={tab.id}

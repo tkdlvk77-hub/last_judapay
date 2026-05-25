@@ -1112,7 +1112,22 @@ function InviteView({ onBack, onDone }) {
             </button>
           ))}
         </div>
-        <input type={method === 'email' ? 'email' : 'text'} value={input} onChange={e => setInput(e.target.value)}
+        <input
+          type={method === 'email' ? 'email' : method === 'phone' ? 'tel' : 'text'}
+          inputMode={method === 'phone' ? 'numeric' : undefined}
+          value={input}
+          onChange={e => {
+            if (method === 'phone') {
+              // 010-XXXX-XXXX 자동 포맷
+              const d = e.target.value.replace(/\D/g, '').slice(0, 11)
+              const f = d.length <= 3 ? d
+                : d.length <= 7 ? `${d.slice(0,3)}-${d.slice(3)}`
+                : `${d.slice(0,3)}-${d.slice(3,7)}-${d.slice(7)}`
+              setInput(f)
+            } else {
+              setInput(e.target.value)
+            }
+          }}
           placeholder={METHODS.find(m => m.id === method)?.placeholder}
           style={{ width:'100%', height:'50px', background:COLORS.bgCard, boxShadow:SHADOWS.card, border:'none', borderRadius:RADIUS.lg, padding:'0 16px', fontSize:'14px', color:COLORS.t1, outline:'none', fontFamily:'inherit', boxSizing:'border-box', marginBottom:'16px' }}/>
 

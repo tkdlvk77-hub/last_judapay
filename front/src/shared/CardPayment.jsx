@@ -6,6 +6,16 @@ import { COLORS, RADIUS, SHADOWS } from '../design/tokens'
 import { getAccountTheme } from '../design/accountTokens'
 import MccBlock, { DEFAULT_MCC } from './execute/MccBlock'
 import { dialog } from '../components/Dialog'
+import { session } from '../services/api'
+import {
+  listCards as apiListCards,
+  issueCard as apiIssueCard,
+  pauseCard as apiPauseCard,
+  resumeCard as apiResumeCard,
+  listCardPayments as apiListCardPayments,
+  updateCardMcc as apiUpdateCardMcc,
+  getCardMcc as apiGetCardMcc,
+} from '../services/cards'
 
 function getUserType() {
   const s = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('bizType') : null
@@ -540,6 +550,44 @@ function MCCScreen({ mccItems, onChange, onClose, singleLimit, onLimitChange, ex
 // ─────────────────────────────────────────────────────────
 // 메인
 // ─────────────────────────────────────────────────────────
+// 서버 카드 응답 → 화면용 카드 형태 어댑터
+function adaptServerCard(s) {
+  return {
+    id:           s.id,
+    holder:       s.holder || '고객',
+    type:         s.network === 'VISA' ? '비자' : '마스터',
+    number:       s.number || s.numberMasked || '',
+    numberMasked: s.numberMasked || '**** **** **** ****',
+    validThru:    s.validThru || '',
+    cvc:          s.cvc || '***',
+    label:        s.label || '주 카드',
+    balance:      0,
+    _server:      true,
+    _paused:      !!s.paused,
+    _monthlyLimit: s.monthlyLimit || 3000000,
+    _monthlySpent: s.monthlySpent || 0,
+  }
+}
+
+// 서버 결제내역 → 카드 화면 payments 항목 어댑터
+function adaptServerPayment(t) {
+  const thisMonth = new Date().getMonth() + 1
+  const created   = t.createdAt ? new Date(t.createdAt) : new Date()
+  const blocked   = !!t.blocked || t.fdsStatus === 'BLOCKED'
+  return {
+    id:     t.id,
+    name:   blocked
+              ? `${t.merchantName || '가맹점'} (차단)`
+              : (t.merchantName || '가맹점'),
+    meta:   blocked
+              ? `${created.getMonth()+1}.${created.getDate()} ${String(created.getHours()).padStart(2,'0')}:${String(created.getMinutes()).padStart(2,'0')} · MCC ${t.merchantMcc || ''} 차단`
+              : `${created.getMonth()+1}.${created.getDate()} ${String(created.getHours()).padStart(2,'0')}:${String(created.getMinutes()).padStart(2,'0')}`,
+    amount: blocked ? 0 : -Math.abs(Number(t.amount || 0)),
+    status: blocked ? 'blocked' : 'normal',
+    month:  created.getMonth() + 1,
+  }
+}
+
 export default function CardPayment() {
   const theme = getAccountTheme()
   const navigate = useNavigate()
@@ -550,8 +598,10 @@ export default function CardPayment() {
   const isViewer      = bizRoleNow === 'viewer'              // 일시정지·QR 포함 전체 잠금
   const isActionLocked = ['viewer','staff'].includes(bizRoleNow) // 발급·지갑변경 잠금
 
-  // 카드 목록 state
-  const [cards, setCards] = useState(INITIAL_CARDS)
+  const _isAuthed = !!session.user
+
+  // 카드 목록 state — 로그인 시 빈 배열 시작 후 서버 fetch, 미로그인은 데모 카드
+  const [cards, setCards] = useState(_isAuthed ? [] : INITIAL_CARDS)
   const [selectedIdx, setSelectedIdx] = useState(() => {
     const s = sessionStorage.getItem('cardPayment_selectedIdx')
     return s !== null ? parseInt(s, 10) : 0
@@ -563,7 +613,7 @@ export default function CardPayment() {
 
   // 카드별 독립 state (paused, revealed, mccItems, walletId)
   const [cardStates, setCardStates] = useState(() =>
-    Object.fromEntries(INITIAL_CARDS.map(c => [c.id, {
+    Object.fromEntries((_isAuthed ? [] : INITIAL_CARDS).map(c => [c.id, {
       paused: false,
       revealed: false,
       mccItems: DEFAULT_MCC.map(m => ({ ...m })),
@@ -571,6 +621,54 @@ export default function CardPayment() {
       securitySettings: { blockOverseas:false, blockOnline:false, alertUsage:true },
     }]))
   )
+
+  // 카드별 결제내역 (서버에서 받아옴) — { cardId: [paymentItem,...] }
+  const [serverPayments, setServerPayments] = useState({})
+
+  // ── 로그인 시: 서버에서 카드 목록 fetch ──
+  useEffect(() => {
+    if (!_isAuthed) return
+    let aborted = false
+    ;(async () => {
+      try {
+        const resp = await apiListCards()
+        const arr  = (resp?.data || resp || []).map(adaptServerCard)
+        if (aborted) return
+        if (arr.length === 0) {
+          // 카드 없으면 자동 발급 시도 — 데모 시드가 실패한 경우 대비
+          try {
+            const issued = await apiIssueCard({ label: '주 카드' })
+            const card   = adaptServerCard(issued?.data || issued)
+            if (!aborted) {
+              setCards([card])
+              setCardStates({ [card.id]: { paused: card._paused, revealed: false,
+                mccItems: DEFAULT_MCC.map(m=>({...m})), walletId:'my',
+                securitySettings:{ blockOverseas:false, blockOnline:false, alertUsage:true } } })
+            }
+          } catch (e) {
+            console.debug('[CardPayment] auto-issue failed', e?.message || e)
+          }
+          return
+        }
+        setCards(arr)
+        // 각 카드별 초기 state — 서버 paused 반영
+        const states = {}
+        for (const c of arr) {
+          states[c.id] = {
+            paused: c._paused,
+            revealed: false,
+            mccItems: DEFAULT_MCC.map(m => ({ ...m })),
+            walletId: 'my',
+            securitySettings: { blockOverseas:false, blockOnline:false, alertUsage:true },
+          }
+        }
+        setCardStates(states)
+      } catch (e) {
+        console.debug('[CardPayment] listCards failed', e?.message || e)
+      }
+    })()
+    return () => { aborted = true }
+  }, [_isAuthed])
 
   // 모달/시트 state
   const [showFaceID, setShowFaceID] = useState(false)
@@ -586,8 +684,46 @@ export default function CardPayment() {
     setTimeout(() => { setShowMCC(false); setMccExiting(false) }, 320)
   }
 
-  const card = cards[selectedIdx]
+  // 선택 인덱스가 cards 배열 범위를 벗어나면 0번 카드 사용 (race condition 보호)
+  const safeIdx = cards.length === 0 ? 0
+                : (selectedIdx >= 0 && selectedIdx < cards.length ? selectedIdx : 0)
+  const card = cards[safeIdx]
   const cs = cardStates[card?.id] || { paused:false, revealed:false, mccItems: DEFAULT_MCC, walletId:'my' }
+
+  // ── 선택된 카드의 결제내역 fetch (로그인 + 서버 카드만) ──
+  useEffect(() => {
+    if (!_isAuthed) return
+    if (!card?.id || !card._server) return
+    let aborted = false
+    ;(async () => {
+      try {
+        const resp = await apiListCardPayments(card.id, { page: 0, size: 100 })
+        const arr  = (resp?.data || resp || []).map(adaptServerPayment)
+        if (!aborted) setServerPayments(prev => ({ ...prev, [card.id]: arr }))
+      } catch (e) {
+        console.debug('[CardPayment] listCardPayments failed', e?.message || e)
+      }
+    })()
+    return () => { aborted = true }
+  }, [_isAuthed, card?.id, card?._server])
+
+  // ── 권한자금 결제 broadcast 수신 시 카드 결제내역 갱신 ──
+  useEffect(() => {
+    if (!_isAuthed || !card?.id || !card._server) return
+    const refresh = async () => {
+      try {
+        const resp = await apiListCardPayments(card.id, { page: 0, size: 100 })
+        const arr  = (resp?.data || resp || []).map(adaptServerPayment)
+        setServerPayments(prev => ({ ...prev, [card.id]: arr }))
+      } catch {}
+    }
+    const onRealtime = (ev) => {
+      const k = ev?.detail?.kind
+      if (k === 'payment' || k === 'wallet') refresh()
+    }
+    window.addEventListener('judapay:realtime', onRealtime)
+    return () => window.removeEventListener('judapay:realtime', onRealtime)
+  }, [_isAuthed, card?.id, card?._server])
 
   const updateCardState = (cardId, patch) =>
     setCardStates(prev => ({ ...prev, [cardId]: { ...prev[cardId], ...patch } }))
@@ -597,7 +733,26 @@ export default function CardPayment() {
     setShowFaceID(true)
   }
 
-  const handleIssue = (label) => {
+  const handleIssue = async (label) => {
+    // 로그인 시 서버 발급, 미로그인은 로컬 데모 발급
+    if (_isAuthed) {
+      try {
+        const resp = await apiIssueCard({ label: label || '추가 카드' })
+        const newCard = adaptServerCard(resp?.data || resp)
+        setCards(prev => [...prev, newCard])
+        setCardStates(prev => ({ ...prev, [newCard.id]: { paused: newCard._paused, revealed:false,
+          mccItems: DEFAULT_MCC.map(m=>({...m})), walletId:'my',
+          securitySettings:{ blockOverseas:false, blockOnline:false, alertUsage:true, lockPayment:false } } }))
+        selectCard(cards.length)
+        setShowIssue(false)
+        return
+      } catch (e) {
+        console.warn('[CardPayment] issue failed', e?.message || e)
+        dialog.alert({ title:'발급 실패', message: e?.message || '카드 발급에 실패했어요.' })
+        return
+      }
+    }
+    // 미로그인 — 데모 발급
     const newCard = {
       id: `card_${Date.now()}`,
       holder: '이호형',
@@ -615,18 +770,64 @@ export default function CardPayment() {
     setShowIssue(false)
   }
 
+  // 일시정지 토글 — 서버 카드면 API 호출, 로컬 카드면 로컬만
+  const handleTogglePaused = async () => {
+    const next = !cs.paused
+    if (_isAuthed && card?._server) {
+      try {
+        const resp = next ? await apiPauseCard(card.id) : await apiResumeCard(card.id)
+        const updated = adaptServerCard(resp?.data || resp)
+        setCards(prev => prev.map(c => c.id === card.id ? { ...c, ...updated } : c))
+        updateCardState(card.id, { paused: updated._paused })
+        return
+      } catch (e) {
+        console.warn('[CardPayment] toggle paused failed', e?.message || e)
+        dialog.alert({ title:'변경 실패', message: e?.message || '카드 상태를 바꾸지 못했어요.' })
+        return
+      }
+    }
+    updateCardState(card.id, { paused: next })
+  }
+
   // 카드별 색상 팔레트 (인덱스 기준 순환)
-  const palette = CARD_PALETTES[selectedIdx % CARD_PALETTES.length]
+  const palette = CARD_PALETTES[safeIdx % CARD_PALETTES.length]
 
   const thisMonth = new Date().getMonth() + 1
-  const allPayments  = CARD_PAYMENTS[card?.id] || []
-  const payments     = allPayments  // 전체 표시 (최신순 이미 정렬됨)
-  const monthlyUsed  = allPayments
+  // 서버 카드면 서버 결제내역, 아니면 데모 데이터.
+  const allPayments  = card?._server
+        ? (serverPayments[card.id] || [])
+        : (CARD_PAYMENTS[card?.id] || [])
+  const payments     = allPayments
+  // 서버 카드는 서버가 알려준 monthlySpent 우선
+  const localMonthlyUsed = allPayments
     .filter(p => p.month === thisMonth && p.status !== 'blocked' && p.amount < 0)
     .reduce((s, p) => s + Math.abs(p.amount), 0)
+  const monthlyUsed = card?._server ? (card._monthlySpent || localMonthlyUsed) : localMonthlyUsed
   const monthlyCount = allPayments.filter(p => p.month === thisMonth && p.status !== 'blocked' && p.amount < 0).length
-  const monthlyLimit = CARD_MONTHLY_LIMIT[card?.id] || null
+  const monthlyLimit = card?._server ? (card._monthlyLimit || 3000000) : (CARD_MONTHLY_LIMIT[card?.id] || null)
   const usagePct     = monthlyLimit ? Math.min(100, Math.round(monthlyUsed / monthlyLimit * 100)) : null
+
+  // ── 카드 로딩 가드 (로그인 후 서버 fetch 전 첫 렌더 보호) ──
+  //   모든 Hooks 호출 이후, JSX 분기 전에만 early-return 가능.
+  if (!card) {
+    return (
+      <PhoneShell>
+        <div style={{ flex:1, overflowY:'auto', background: COLORS.bg }}>
+          <div style={{ background: theme.headerSolid, paddingTop:'max(20px, env(safe-area-inset-top))', paddingBottom:'20px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'8px', padding:'4px 16px' }}>
+              <button onClick={() => navigate(-1)} style={{ width:'32px', height:'32px', background:'transparent', border:'none', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', padding:0 }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <span style={{ fontSize:'17px', fontWeight:700, color:'#fff' }}>카드 관리</span>
+            </div>
+          </div>
+          <div style={{ padding:'40px 20px', textAlign:'center', color: COLORS.t4, fontSize:'13px' }}>
+            카드 정보를 불러오는 중…
+          </div>
+        </div>
+      </PhoneShell>
+    )
+  }
 
   return (
     <PhoneShell>
@@ -677,7 +878,7 @@ export default function CardPayment() {
           <div style={{ marginBottom:'14px' }}>
             <ActionGrid
               paused={cs.paused}
-              onToggle={!isViewer ? () => updateCardState(card.id, { paused: !cs.paused }) : undefined}
+              onToggle={!isViewer ? handleTogglePaused : undefined}
               onQR={!isViewer ? () => dialog.alert({ title: 'QR 결제', message: '추후 구현될 기능입니다.' }) : undefined}
               canToggle={!isViewer}
               canQR={!isViewer}
@@ -809,7 +1010,22 @@ export default function CardPayment() {
       {showMCC && (
         <MCCScreen
           mccItems={cs.mccItems}
-          onChange={items => updateCardState(card.id, { mccItems: items })}
+          onChange={items => {
+            updateCardState(card.id, { mccItems: items })
+            // 로그인 + 서버 카드면 서버에도 동기화 (debounce 없이 즉시 — items 변경마다 호출)
+            if (_isAuthed && card?._server) {
+              const policies = (items || [])
+                .filter(m => m.block || m.allow)
+                .map(m => ({
+                  mccCode: String(m.code || m.mcc || ''),
+                  action:  m.block ? 'BLOCK' : 'ALLOW',
+                  label:   m.label || m.name || '',
+                }))
+                .filter(p => p.mccCode)
+              apiUpdateCardMcc(card.id, policies).catch(e =>
+                console.debug('[CardPayment] updateMcc failed', e?.message || e))
+            }
+          }}
           onClose={closeMCC}
           singleLimit={cs.singleLimit}
           onLimitChange={limit => updateCardState(card.id, { singleLimit: limit })}

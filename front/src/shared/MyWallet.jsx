@@ -1,8 +1,33 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../design/components'
 import { getAccountTheme } from '../design/accountTokens'
 import { useScrollRestore } from '../hooks/useScrollRestore'
+import { useWalletState, refreshWallets } from '../services/walletStore'
+import { session } from '../services/api'
+
+// 서버 Wallet → MyWallet 카드 형태로 변환
+function adaptServerWallet(w) {
+  return {
+    id:        w.id,
+    name:      w.name,
+    label:     w.label || (w.kind === 'MY' ? '자유 사용' : w.purposeLabel || ''),
+    amount:    Number(w.balance || 0),
+    available: Number(w.balance || 0) - Number(w.pendingOut || 0),
+    kind:      w.kind,
+    purpose:   w.purpose,
+    icon:      w.icon || (w.kind === 'MY' ? '💳' : '🎁'),
+    avatarBg:  w.avatarBg || '#5B4FE8',
+    avatarFg:  w.avatarFg || '#FFFFFF',
+    senderName: w.senderName,
+    allowedMcc: w.allowedMcc,
+    blockedMcc: w.blockedMcc,
+    dailyLimit: w.dailyLimit,
+    singleLimit: w.singleLimit,
+    expiresAt:  w.expiresAt,
+    _fromServer: true,
+  }
+}
 
 const C = {
   navy:   '#0F172A',
@@ -243,9 +268,19 @@ export default function MyWallet() {
   const initList  = userType === 'business' ? BUSINESS_WALLETS : PERSONAL_WALLETS
   const completed = userType === 'business' ? BUSINESS_COMPLETED : PERSONAL_COMPLETED
 
-  const [wallets, setWallets]   = useState(initList)
+  const [localWallets, setLocalWallets] = useState(initList)
   const [editMode, setEditMode] = useState(false)
-  const total = wallets.reduce((s, w) => s + w.amount, 0)
+
+  // ── 서버 지갑 (로그인 시 우선) ──
+  const serverState = useWalletState()
+  useEffect(() => { refreshWallets() }, [])
+  const isAuthed = !!session.user
+  const wallets = isAuthed && serverState.wallets.length > 0
+    ? serverState.wallets.map(adaptServerWallet)
+    : localWallets
+  const setWallets = isAuthed ? () => {} : setLocalWallets   // 서버 모드에서는 reorder 비활성
+
+  const total = wallets.reduce((s, w) => s + (w.amount || 0), 0)
 
   // [권한] 기업 기준 viewer 는 출금 버튼 비활성화
   const bizRole    = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('bizRole') || '' : ''

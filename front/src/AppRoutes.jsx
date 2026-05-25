@@ -27,6 +27,7 @@ import ChatRoomPage from './shared/messages/ChatRoomPage'
 import More from './shared/More'
 import ExecutionStats from './shared/ExecutionStats'
 import RecipientDetail from './shared/RecipientDetail'
+import PaymentSimulator from './shared/PaymentSimulator'
 
 // shared/execute (양쪽 공유 - Freelance, RealEstate 흐름)
 import Execute from './shared/execute/Execute'
@@ -313,6 +314,7 @@ export default function AppRoutes({ location }) {
       <Route path="/approval-center" element={<Protected><ApprovalCenter /></Protected>} />
       <Route path="/tax-accountant" element={<Protected><TaxAccountant /></Protected>} />
 
+      <Route path="/payment-simulator" element={<Protected><PaymentSimulator /></Protected>} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   )

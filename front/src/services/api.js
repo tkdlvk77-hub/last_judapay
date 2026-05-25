@@ -58,12 +58,57 @@ function getCookie(name) {
 function getCsrfToken() { return getCookie('XSRF-TOKEN') }
 
 // ─────────────────────────────────────────────────────────
+// 서버 다운 감지 — circuit breaker
+//   네트워크 에러(ECONNREFUSED, fetch 실패) 가 연속 발생하면
+//   짧은 backoff 동안 fetch 자체를 스킵하여 콘솔 폭주 방지.
+// ─────────────────────────────────────────────────────────
+const _circuit = {
+  openUntil: 0,            // ms timestamp — 이 시간까지는 fetch 스킵
+  failureCount: 0,         // 연속 실패 수
+  lastLogAt: 0,            // 로그 throttle
+}
+const CIRCUIT_TRIP_AFTER = 3       // 3회 연속 실패하면 회로 차단
+const CIRCUIT_BACKOFF_MS = 10000   // 10초 동안 fetch 스킵
+const LOG_THROTTLE_MS    = 5000    // 같은 에러는 5초당 1번만 콘솔에
+
+function isCircuitOpen() {
+  return Date.now() < _circuit.openUntil
+}
+function recordFailure() {
+  _circuit.failureCount += 1
+  if (_circuit.failureCount >= CIRCUIT_TRIP_AFTER) {
+    _circuit.openUntil = Date.now() + CIRCUIT_BACKOFF_MS
+  }
+}
+function recordSuccess() {
+  _circuit.failureCount = 0
+  _circuit.openUntil = 0
+}
+function throttledWarn(msg) {
+  const now = Date.now()
+  if (now - _circuit.lastLogAt < LOG_THROTTLE_MS) return
+  _circuit.lastLogAt = now
+  console.warn(msg)
+}
+
+/** 서버가 dead 인지 체크 — 다른 모듈이 fetch 시도 전에 활용 가능 */
+export function isServerDown() { return isCircuitOpen() }
+
+// ─────────────────────────────────────────────────────────
 // fetch 래퍼
 // ─────────────────────────────────────────────────────────
 export async function apiFetch(path, { method = 'GET', headers, body, signal } = {}) {
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`
   const csrf = getCsrfToken()
   const isMutation = method !== 'GET' && method !== 'HEAD'
+
+  // 회로 차단 중이면 즉시 NetworkError 로 reject — 호출자는 데모 폴백 사용
+  if (isCircuitOpen()) {
+    const e = new Error('Server unreachable (circuit open)')
+    e.code = 'NETWORK_DOWN'
+    e.status = 0
+    throw e
+  }
 
   const h = {
     'Accept': 'application/json',
@@ -72,13 +117,25 @@ export async function apiFetch(path, { method = 'GET', headers, body, signal } =
     ...headers,
   }
 
-  const res = await fetch(url, {
-    method,
-    headers: h,
-    body: body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
-    credentials: 'include',   // ★ 쿠키 자동 송수신
-    signal,
-  })
+  let res
+  try {
+    res = await fetch(url, {
+      method,
+      headers: h,
+      body: body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+      credentials: 'include',   // ★ 쿠키 자동 송수신
+      signal,
+    })
+  } catch (err) {
+    // 네트워크 레벨 실패 (ECONNREFUSED, TypeError: Failed to fetch 등)
+    recordFailure()
+    throttledWarn(`[api] network error → ${path} (서버 미가동? 클라는 데모 폴백 사용)`)
+    const e = new Error('Network error')
+    e.code = 'NETWORK_DOWN'
+    e.status = 0
+    e.cause = err
+    throw e
+  }
 
   // ── 에러 응답 처리 ──────────────────────────────────────
   // 401/403 라도 모두 "토큰 만료" 가 아니다. PIN 오류 / MFA 미통과 등은
@@ -120,6 +177,9 @@ export async function apiFetch(path, { method = 'GET', headers, body, signal } =
     e.body = errBody
     throw e
   }
+
+  // 성공 — circuit breaker reset
+  recordSuccess()
 
   // 본문 없는 응답
   const ct = res.headers.get('content-type') || ''

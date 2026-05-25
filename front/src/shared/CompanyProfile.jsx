@@ -22,6 +22,13 @@ import {
 } from './companyProfileStore'
 import { seedDemoTransactions } from './transactionStore'
 import { useScrollRestore } from '../hooks/useScrollRestore'
+import { useUser } from '../contexts/UserContext'
+
+// 로그인 사용자의 실제 회사명 우선, 없으면 데모 COMPANY.name
+function useLiveCompanyName() {
+  const { currentUser } = useUser()
+  return currentUser?.company || currentUser?.name || null
+}
 
 // 데모 데이터 초기화 (개발용)
 seedDemoTransactions()
@@ -112,6 +119,7 @@ function GoalInput({ goals, onChange, placeholder }) {
 // ─── 탭: 소개 ─────────────────────────────────────────────
 function IntroTab({ lang, theme, canEditProfile }) {
   useProfileStore()
+  const liveName     = useLiveCompanyName() || COMPANY.name
   const msg          = getMsg()
   const yearGoals    = getYearGoals()
   const quarterGoals = getQuarterGoals()
@@ -146,10 +154,10 @@ function IntroTab({ lang, theme, canEditProfile }) {
       <div style={{ background:COLORS.bgCard, borderRadius:'18px', boxShadow:SHADOWS.card, padding:'18px', marginBottom:'14px' }}>
         <div style={{ display:'flex', alignItems:'flex-start', gap:'14px' }}>
           <div style={{ width:'52px', height:'52px', borderRadius:'14px', background:theme.headerGrad, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'20px', fontWeight:800, color:'#fff', flexShrink:0 }}>
-            {COMPANY.name[1]}
+            {(liveName || COMPANY.name).charAt(1) || (liveName || COMPANY.name).charAt(0)}
           </div>
           <div style={{ flex:1 }}>
-            <div style={{ fontSize:'18px', fontWeight:800, color:COLORS.t1, marginBottom:'6px' }}>{COMPANY.name}</div>
+            <div style={{ fontSize:'18px', fontWeight:800, color:COLORS.t1, marginBottom:'6px' }}>{liveName || COMPANY.name}</div>
             <div style={{ display:'flex', flexDirection:'column', gap:'3px' }}>
               <div style={{ display:'flex', alignItems:'center', gap:'5px' }}>
                 <div style={{ width:'7px', height:'7px', borderRadius:'50%', background:'#10B981', flexShrink:0 }} />
@@ -498,6 +506,7 @@ function ProjectTab({ lang, theme, canEditProfile }) {
 
 // ─── 외부 공개 미리보기 ───────────────────────────────────
 function PublicPreview({ theme, onClose }) {
+  const liveName = useLiveCompanyName() || COMPANY.name
   const MONTHS_DATA = [
     { m:'3월', total:28900000, revenue:77000000, growth:10.0, newBiz:8,  active:75, cashflow:{ inflow:310000000, outflow:28900000, remaining:2800000000, burn:7.2 } },
     { m:'4월', total:32400000, revenue:89000000, growth:15.6, newBiz:12, active:87, cashflow:{ inflow:350000000, outflow:32400000, remaining:2700000000, burn:8.5 } },
@@ -553,10 +562,10 @@ function PublicPreview({ theme, onClose }) {
         <Card title="💬 대표 메시지">
           <div style={{ display:'flex', alignItems:'center', gap:'12px', marginBottom:'12px' }}>
             <div style={{ width:'44px', height:'44px', borderRadius:'12px', background:theme.headerGrad, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', fontWeight:800, color:'#fff', flexShrink:0 }}>
-              {COMPANY.name[1]}
+              {(liveName || COMPANY.name).charAt(1) || (liveName || COMPANY.name).charAt(0)}
             </div>
             <div>
-              <div style={{ fontSize:'15px', fontWeight:800, color:COLORS.t1 }}>{COMPANY.name}</div>
+              <div style={{ fontSize:'15px', fontWeight:800, color:COLORS.t1 }}>{liveName || COMPANY.name}</div>
               <div style={{ display:'flex', alignItems:'center', gap:'4px', marginTop:'2px' }}>
                 <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#10B981' }} />
                 <span style={{ fontSize:'11px', color:'#047857', fontWeight:600 }}>정상 운영 중 · {COMPANY.lastActive}</span>

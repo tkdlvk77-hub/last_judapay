@@ -222,8 +222,10 @@ function AddEmployeeSheet({ theme, onClose, onAdd }) {
         <div style={{ fontSize:'17px', fontWeight:700, color:COLORS.t1, marginBottom:'4px' }}>직원 추가</div>
         <div style={{ fontSize:'12px', color:COLORS.t4, marginBottom:'18px' }}>정규직 직원의 휴대폰 번호를 입력해주세요</div>
         <div style={{ fontSize:'12px', fontWeight:600, color:COLORS.t2, marginBottom:'6px' }}>휴대폰 번호 (숫자만)</div>
-        <input type="tel" inputMode="numeric" value={phone}
-          onChange={e => setPhone(e.target.value.replace(/[^0-9]/g,'').slice(0,11))} placeholder="01012345678"
+        {/* phone state 는 raw digits 11자리 유지(REGISTERED_USERS[phone] 키 매칭 때문).
+            화면에는 displayPhone 으로 010-XXXX-XXXX 포맷 표시 — value 만 formatted, 저장은 raw. */}
+        <input type="tel" inputMode="numeric" value={displayPhone(phone)}
+          onChange={e => setPhone(e.target.value.replace(/[^0-9]/g,'').slice(0,11))} placeholder="010-1234-5678"
           style={{ width:'100%', padding:'12px 14px', background:COLORS.bg, border:`1.5px solid ${isPhoneComplete ? theme.brandDark : COLORS.border}`, borderRadius:'10px', fontSize:'15px', fontWeight:600, color:COLORS.t1, fontFamily:'inherit', outline:'none', marginBottom:'6px', boxSizing:'border-box', letterSpacing:'1px' }}
         />
         <div style={{ fontSize:'11px', color:COLORS.t4, marginBottom:'10px', textAlign:'right', minHeight:'14px' }}>

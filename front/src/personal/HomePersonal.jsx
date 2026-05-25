@@ -10,6 +10,7 @@ import { getAccountTheme } from '../design/accountTokens'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
 import { useUser } from '../contexts/UserContext'
 import { hydrateHome } from '../services/hydrate'
+import { useWalletState, refreshWallets } from '../services/walletStore'
 import { session } from '../services/api'
 
 // ─── 공통 카드 스타일 ─────────────────────────────────────
@@ -36,6 +37,66 @@ const CATEGORY_STYLE = {
   '자동 지급 잔액 부족': { bg:'#FFF7ED', color:'#C2410C', border:'#FDBA74', dot:'#EA580C' },
   '자동 지급 확인 필요': { bg:'#FFFBEB', color:'#B45309', border:'#FDE68A', dot:'#D97706' },
   '자동 지급 예정':      { bg:'#ECFDF5', color:'#047857', border:'#6EE7B7', dot:'#10B981' },
+  '서명 필요':           { bg:'#F5F3FF', color:'#6D28D9', border:'#DDD6FE', dot:'#7C3AED' },
+  '인증 대기':           { bg:'#FFFBEB', color:'#B45309', border:'#FDE68A', dot:'#D97706' },
+  '진행 중':             { bg:'#EFF6FF', color:'#1D4ED8', border:'#BFDBFE', dot:'#2563EB' },
+  '검수 필요':           { bg:'#FEF3C7', color:'#854F0B', border:'#FDE68A', dot:'#D97706' },
+  '처리 필요':           { bg:'#F3F4F6', color:'#374151', border:'#E5E7EB', dot:'#9CA3AF' },
+}
+
+// 자금 종류별 아바타 색상 (수신자 이니셜 배경)
+const TYPE_AVATAR = {
+  lend:        { bg:'#FFF4E0', fg:'#C8821A' },
+  freelance:   { bg:'#EDF3FA', fg:'#1E5294' },
+  bonus:       { bg:'#E6F5EF', fg:'#085041' },
+  condolence:  { bg:'#FCE7F3', fg:'#9D174D' },
+  gift:        { bg:'#FCE7F3', fg:'#9D174D' },
+  invest:      { bg:'#E6F5EF', fg:'#2A7D5E' },
+  rent:        { bg:'#EDF3FA', fg:'#2D6BB0' },
+  support:     { bg:'#E6F5EF', fg:'#2A7D5E' },
+}
+
+// 서버 status → 화면 카테고리 라벨
+function statusToCategory(status, category) {
+  switch (status) {
+    case 'waiting':     return '인증 대기'
+    case 'signing':     return '서명 필요'
+    case 'in_progress': return '진행 중'
+    case 'reviewing':   return '검수 필요'
+    case 'rejected':    return '입금 필요'
+    default:            return category === 'contract' ? '서명 필요' : '처리 필요'
+  }
+}
+
+// 서버 pending payout → DEMO_PENDING 카드 shape 으로 변환
+function mapServerPendingToCard(p) {
+  if (!p) return null
+  const fmt   = (n) => Number(n || 0).toLocaleString('ko-KR')
+  // 서버는 sender/recipient 양쪽 관점의 pending 을 모두 보내준다.
+  //   viewerRole === 'recipient' → 내가 받는 쪽. 상대방(=fromUserName)을 카드에 표시.
+  //   viewerRole === 'sender'    → 내가 보내는 쪽. 수령인(=recipientName)을 카드에 표시. (기본)
+  const isRecipient = p.viewerRole === 'recipient'
+  const counterpart = isRecipient
+    ? (p.fromUserName || '발신자')
+    : (p.recipientName || '')
+  // 전화번호만 있는 비가입자 수령인(010-xxxx-xxxx) 케이스는 첫 글자 "0" 대신 사람 아이콘 표기
+  const isPhone     = /^\s*0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}\s*$/.test(counterpart)
+  const tone        = TYPE_AVATAR[p.type] || { bg:'#F2EFE9', fg:'#555550' }
+  return {
+    id:           p.id,
+    category:     statusToCategory(p.status, p.category),
+    emoji:        p.typeIcon || '💸',
+    from:         counterpart || (p.typeLabel || '수신자 없음'),
+    fromInitial:  isPhone ? '👤' : (counterpart ? counterpart.charAt(0) : '?'),
+    avatarBg:     tone.bg,
+    avatarFg:     tone.fg,
+    desc:         p.actionLabel || p.dealTitle || p.typeLabel || '',
+    amount:       p.amount ? `${fmt(p.amount)}원` : null,
+    urgent:       p.status === 'waiting' || p.status === 'rejected',
+    threadId:     p.threadId || p.id,
+    viewerRole:   p.viewerRole || 'sender',
+    _payoutId:    p.id,
+  }
 }
 
 // ─── 실시간 결제 (데모 폴백) ──────────────────────────────
@@ -52,13 +113,32 @@ const DEMO_PAYMENTS = [
 function mapServerPaymentToCard(tx) {
   if (!tx) return null
   const blocked = tx.fdsStatus === 'BLOCKED' || tx.status === 'DECLINED'
+
+  // 결제자가 본인이 아니면 (권한자금 발신자 viewer 케이스) 결제자 이름을 가맹점 앞에 prefix.
+  //   ex) "박철수 · 이마트 역삼점"
+  const merchantBase = tx.merchantName || '결제'
+  const isMine = tx.isMine !== false   // 서버가 isMine 안 보내면 본인 결제로 간주 (호환)
+  const merchant = isMine
+    ? merchantBase
+    : (tx.userName ? `${tx.userName} · ${merchantBase}` : merchantBase)
+
+  // sub 라인 — 시간 · MCC (· 사용 지갑 이름) 같이
+  const walletPart = tx.wallet?.kind === 'PERMISSION' && tx.wallet?.name ? tx.wallet.name : null
+  const sub = [
+    tx.requestedAt ? new Date(tx.requestedAt).toLocaleString('ko-KR') : '',
+    tx.merchantMcc,
+    walletPart,
+  ].filter(Boolean).join(' · ')
+
   return {
     id:       tx.id || tx.transactionNo,
-    merchant: tx.merchantName || '결제',
-    sub:      [tx.requestedAt ? new Date(tx.requestedAt).toLocaleString('ko-KR') : '', tx.merchantMcc].filter(Boolean).join(' · '),
+    merchant,
+    sub,
     amount:   blocked ? 0 : -(Number(tx.amount) || 0),
     status:   blocked ? 'blocked' : 'normal',
-    type:     'mine',
+    type:     isMine ? 'mine' : 'external',
+    userName: tx.userName,
+    isMine,
   }
 }
 
@@ -103,36 +183,59 @@ export default function HomePersonal() {
   const navigate = useNavigate()
   const theme = getAccountTheme()
   const scrollRef = useScrollRestore()
-  const { login } = useUser()
+  const { login, currentUser } = useUser()
   const [todoExpanded, setTodoExpanded] = useState(
     () => sessionStorage.getItem('home_todo_expanded') === 'true'
   )
 
   // ── 서버 데이터 (로그인 안 됐으면 데모 폴백) ──────────────
-  const [userName,  setUserName]  = useState(() => session.user?.name || '이호형')
+  // 우선순위: session.user.name → currentUser.name (DEMO_USERS) → 빈 문자열
+  const [userName,  setUserName]  = useState(() => session.user?.name || currentUser?.name || '')
   const [balance,   setBalance]   = useState(null)         // null = 데모, 숫자 = 서버
-  const [pending,   setPending]   = useState(DEMO_PENDING)
-  const [payments,  setPayments]  = useState(DEMO_PAYMENTS)
-  const [executing, setExecuting] = useState(DEMO_EXECUTING)
+  // 로그인 시: 빈 배열로 시작 → 서버 응답이 채움. 비로그인 시: 데모 데이터 폴백.
+  const _isAuthed = !!session.user
+  const [pending,   setPending]   = useState(_isAuthed ? [] : DEMO_PENDING)
+  const [payments,  setPayments]  = useState(_isAuthed ? [] : DEMO_PAYMENTS)
+  const [executing, setExecuting] = useState(_isAuthed ? [] : DEMO_EXECUTING)
   const [blockedN,  setBlockedN]  = useState(null)         // null = 폴백 계산
+
+  // currentUser 가 바뀌면 userName 도 동기화 (로그인/로그아웃, storage 이벤트)
+  useEffect(() => {
+    if (currentUser?.name) setUserName(currentUser.name)
+  }, [currentUser?.name])
+
+  // ── 권한자금 합계 (다른 사람이 보내준 자금) ──────────────
+  //   MY 지갑 외에 권한자금(PERMISSION)이 있으면 총합 + 갯수 표시.
+  //   walletStore 가 STOMP 로 자동 갱신.
+  const _wState = useWalletState()
+  const permissionWallets = (_wState.wallets || []).filter(w => w.kind === 'PERMISSION')
+  const permissionTotal = permissionWallets.reduce(
+    (s, w) => s + Math.max(0, (w.balance || 0) - (w.pendingOut || 0)), 0
+  )
 
   const refreshHome = useCallback(async () => {
     const data = await hydrateHome()
     if (!data) return       // 로그인 안 됨 → 데모 유지
     if (data.me?.name)            setUserName(data.me.name)
     if (data.wallet?.available != null) setBalance(data.wallet.available)
-    if (data.pending && data.pending.length) setPending(data.pending)
-    if (data.payments && data.payments.length) {
-      const mapped = data.payments.map(mapServerPaymentToCard).filter(Boolean)
-      if (mapped.length) setPayments(mapped)
+    // 로그인 시 — 서버 응답이 단일 출처. 빈 배열도 그대로 반영 (데모 카드 잔존 방지)
+    if (Array.isArray(data.pending))   {
+      const mappedPending = data.pending.map(mapServerPendingToCard).filter(Boolean)
+      setPending(mappedPending)
     }
-    // executing 은 빈 배열도 정상 응답 — 폴백 유지 X (서버 단일 출처)
+    if (Array.isArray(data.payments)) {
+      const mapped = data.payments.map(mapServerPaymentToCard).filter(Boolean)
+      setPayments(mapped)
+    }
     if (Array.isArray(data.executing)) setExecuting(data.executing)
     if (typeof data.blocked === 'number') setBlockedN(data.blocked)
   }, [])
 
   // 첫 마운트 시 prefetch
-  useEffect(() => { refreshHome() }, [refreshHome])
+  useEffect(() => {
+    refreshHome()
+    refreshWallets()   // 권한자금 포함 전체 지갑 fetch — Home '받은 자금' 표시용
+  }, [refreshHome])
 
   // ── 다른 화면(충전/결제 등)에서 hydrateHome 이 실행되면 그 결과를 받아 즉시 갱신
   //    이벤트는 services/hydrate.js 의 hydrateHome 마지막에 dispatch.
@@ -143,17 +246,49 @@ export default function HomePersonal() {
       if (!data) return
       if (data.me?.name)                  setUserName(data.me.name)
       if (data.wallet?.available != null) setBalance(data.wallet.available)
-      if (data.pending && data.pending.length) setPending(data.pending)
-      if (data.payments && data.payments.length) {
-        const mapped = data.payments.map(mapServerPaymentToCard).filter(Boolean)
-        if (mapped.length) setPayments(mapped)
+      if (Array.isArray(data.pending))    {
+        const mappedPending = data.pending.map(mapServerPendingToCard).filter(Boolean)
+        setPending(mappedPending)
       }
-      if (Array.isArray(data.executing)) setExecuting(data.executing)
+      if (Array.isArray(data.payments)) {
+        const mapped = data.payments.map(mapServerPaymentToCard).filter(Boolean)
+        setPayments(mapped)
+      }
+      if (Array.isArray(data.executing))  setExecuting(data.executing)
       if (typeof data.blocked === 'number') setBlockedN(data.blocked)
     }
     window.addEventListener('judapay:home-hydrated', handler)
     return () => window.removeEventListener('judapay:home-hydrated', handler)
   }, [])
+
+  // ── STOMP 실시간 — 결제/지갑/자금집행 이벤트 받으면 home 자동 새로고침 ──
+  useEffect(() => {
+    let timer = null
+    const trigger = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => refreshHome(), 500)
+    }
+    const onRealtime = (e) => {
+      const d = e?.detail
+      if (!d) return
+      if (d.kind === 'wallet' || d.kind === 'payment') {
+        trigger()
+      } else if (d.kind === 'message' && d.message?.payoutId) {
+        trigger()
+      }
+    }
+    const onAlert = (e) => {
+      const t = e?.detail?.refType
+      if (t === 'payout' || t === 'payment' || t === 'wallet') trigger()
+    }
+    window.addEventListener('judapay:realtime', onRealtime)
+    window.addEventListener('judapay:alert', onAlert)
+    return () => {
+      window.removeEventListener('judapay:realtime', onRealtime)
+      window.removeEventListener('judapay:alert', onAlert)
+      clearTimeout(timer)
+    }
+  }, [refreshHome])
 
   // ── Pull-to-Refresh ─────────────────────────────────────────
   const handleRefresh = useCallback(async () => {
@@ -220,7 +355,18 @@ export default function HomePersonal() {
           sub={
             <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
               <span style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#34D399', display:'inline-block' }} />
-              받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>320,000원</strong>
+              {permissionWallets.length > 0 ? (
+                <>
+                  받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>
+                    {permissionTotal.toLocaleString('ko-KR')}원
+                  </strong>
+                  <span style={{ color:'rgba(255,255,255,0.55)', marginLeft:'4px' }}>
+                    ({permissionWallets.length}개 지갑)
+                  </span>
+                </>
+              ) : (
+                <>받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>0원</strong></>
+              )}
             </span>
           }
           secondary={

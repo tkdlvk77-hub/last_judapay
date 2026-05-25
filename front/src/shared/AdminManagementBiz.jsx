@@ -1311,7 +1311,22 @@ function InviteView({ onBack }) {
 
         <div style={{ marginBottom:'20px' }}>
           {method !== 'link'
-            ? <input type={method === 'email' ? 'email' : 'tel'} value={input} onChange={e => setInput(e.target.value)}
+            ? <input
+                type={method === 'email' ? 'email' : 'tel'}
+                inputMode={method === 'phone' ? 'numeric' : undefined}
+                value={input}
+                onChange={e => {
+                  if (method === 'phone') {
+                    // 010-XXXX-XXXX 자동 포맷
+                    const d = e.target.value.replace(/\D/g, '').slice(0, 11)
+                    const f = d.length <= 3 ? d
+                      : d.length <= 7 ? `${d.slice(0,3)}-${d.slice(3)}`
+                      : `${d.slice(0,3)}-${d.slice(3,7)}-${d.slice(7)}`
+                    setInput(f)
+                  } else {
+                    setInput(e.target.value)
+                  }
+                }}
                 placeholder={method === 'phone' ? '010-0000-0000' : 'email@company.com'}
                 style={{ width:'100%', height:'50px', background:'#fff', border:`1.5px solid ${input ? '#111827' : '#EAECF0'}`, borderRadius:'13px', padding:'0 16px', fontSize:'15px', color:'#111827', outline:'none', fontFamily:'inherit', boxSizing:'border-box', transition:'border 0.15s', boxShadow:'0 1px 3px rgba(0,0,0,0.04)' }}/>
             : <div style={{ background:'#fff', borderRadius:'13px', padding:'13px 16px', display:'flex', alignItems:'center', gap:'10px', border:'1px solid #EAECF0', boxShadow:'0 1px 3px rgba(0,0,0,0.04)' }}>

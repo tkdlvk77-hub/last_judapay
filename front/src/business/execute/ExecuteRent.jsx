@@ -643,8 +643,20 @@ function RentDetailScreen({
                   <span style={{ fontSize:'11px', color: COLORS.t4, flexShrink:0, width:'40px' }}>{field.label}</span>
                   <input
                     type={field.type}
+                    inputMode={field.type === 'tel' ? 'numeric' : undefined}
                     value={field.value}
-                    onChange={e => field.setter(e.target.value)}
+                    onChange={e => {
+                      // 휴대폰 필드(type='tel')는 010-XXXX-XXXX 자동 포맷
+                      if (field.type === 'tel') {
+                        const d = e.target.value.replace(/\D/g, '').slice(0, 11)
+                        const f = d.length <= 3 ? d
+                          : d.length <= 7 ? `${d.slice(0,3)}-${d.slice(3)}`
+                          : `${d.slice(0,3)}-${d.slice(3,7)}-${d.slice(7)}`
+                        field.setter(f)
+                      } else {
+                        field.setter(e.target.value)
+                      }
+                    }}
                     placeholder={field.placeholder}
                     style={{ flex:1, border:'none', outline:'none', textAlign:'right', fontSize:'13px', fontWeight:600, color: COLORS.t1, background:'transparent', fontFamily:'inherit' }}
                   />

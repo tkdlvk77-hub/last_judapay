@@ -17,6 +17,19 @@ import {
 } from './transactionStore'
 import { useStoreData } from '../hooks/useStoreData'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
+import {
+  listAlerts as listServerAlerts,
+  markAlertRead as markServerAlertRead,
+  markAllAlertsRead as markAllServerAlertsRead,
+} from '../services/alerts'
+import { listMyPayouts } from '../services/payout'
+import { session } from '../services/api'
+import {
+  useUnreadBadges,
+  refreshUnread,
+  decrementAlerts,
+  resetAlertsUnread,
+} from '../services/unreadStore'
 
 // userType → 데모 사용자 ID 매핑 (TODO: useUser 확장 시 동적)
 function getCurrentUserId(userType) {
@@ -168,17 +181,38 @@ const SYSTEM_ALERTS = [
 ]
 
 const FUND_META = {
+  // 인건비
+  salary:       { emoji:'💰', label:'급여' },
   freelance:    { emoji:'🧾', label:'외주비' },
-  marketing:    { emoji:'📢', label:'마케팅비' },
-  lend:         { emoji:'💸', label:'대여금' },
-  personalLend: { emoji:'💸', label:'빌려주기' },
-  realestate:   { emoji:'🏠', label:'부동산' },
-  invest:       { emoji:'📈', label:'투자' },
-  support:      { emoji:'🌱', label:'자금 지원' },
-  gift:         { emoji:'🎁', label:'용돈선물' },
   bonus:        { emoji:'🎉', label:'상여금' },
   condolence:   { emoji:'💐', label:'경조사비' },
   otherIncome:  { emoji:'📋', label:'기타소득' },
+  welfare:      { emoji:'🎁', label:'복리후생' },
+  travelMeal:   { emoji:'✈️', label:'출장식대' },
+  // 운영비
+  marketing:    { emoji:'📢', label:'마케팅비' },
+  rent:         { emoji:'🏢', label:'임대료' },
+  rentLease:    { emoji:'🚗', label:'렌트&리스' },
+  subscription: { emoji:'📱', label:'구독료' },
+  telecom:      { emoji:'📡', label:'통신비' },
+  utility:      { emoji:'💡', label:'공과금' },
+  insurancePremium: { emoji:'🛡️', label:'보험료' },
+  insurance4:   { emoji:'🛡️', label:'4대보험' },
+  otherOps:     { emoji:'📦', label:'기타 정기지출' },
+  misc:         { emoji:'📦', label:'기타지출' },
+  otherExpense: { emoji:'💼', label:'기타비용' },
+  // 사업비
+  lend:         { emoji:'💸', label:'대여금' },
+  vendorLoan:   { emoji:'🤝', label:'대여금' },
+  invest:       { emoji:'📈', label:'투자' },
+  support:      { emoji:'🌱', label:'자금 지원' },
+  // 세금
+  tax:          { emoji:'🧾', label:'세금' },
+  // 개인
+  gift:         { emoji:'🎁', label:'용돈선물' },
+  living:       { emoji:'🛒', label:'생활비' },
+  personalLend: { emoji:'💸', label:'빌려주기' },
+  realestate:   { emoji:'🏠', label:'부동산' },
 }
 
 // ─────────────────────────────────────────────────────────
@@ -309,6 +343,63 @@ function staticAlertSortValue(timeStr) {
 }
 
 // ─────────────────────────────────────────────────────────
+// 서버 알림(AppAlert) → UI 카드 매핑 헬퍼
+// ─────────────────────────────────────────────────────────
+function mapServerKindToType(kind) {
+  switch (kind) {
+    case 'payment_blocked': return 'block'
+    case 'payment_completed': return 'success'
+    case 'wallet_charged':  return 'success'
+    case 'payout_sent':
+    case 'payout_received': return 'success'
+    case 'payout_action':   return 'warning'
+    case 'system':          return 'system'
+    default:                return 'system'
+  }
+}
+
+function mapServerKindToTag(kind) {
+  switch (kind) {
+    case 'payment_blocked':   return '차단'
+    case 'payment_completed': return '결제'
+    case 'wallet_charged':    return '충전'
+    case 'payout_sent':       return '송금'
+    case 'payout_received':   return '입금'
+    case 'payout_action':     return '액션'
+    case 'system':            return '공지'
+    default:                  return '알림'
+  }
+}
+
+function mapSeverityColor(sev, side) {
+  // side = 'fg' | 'bg'
+  const map = {
+    success:  { fg: '#047857', bg: '#D1FAE5' },
+    info:     { fg: '#1E5294', bg: '#EDF3FA' },
+    warn:     { fg: '#854F0B', bg: '#FFF4E0' },
+    critical: { fg: '#A02929', bg: '#FDECEC' },
+  }
+  const m = map[sev] || map.info
+  return m[side]
+}
+
+function toRelativeTime(iso) {
+  if (!iso) return ''
+  try {
+    const t = new Date(iso).getTime()
+    if (!t) return ''
+    const mins = Math.max(0, Math.floor((Date.now() - t) / 60000))
+    if (mins < 1)   return '방금'
+    if (mins < 60)  return `${mins}분 전`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}시간 전`
+    const days = Math.floor(hours / 24)
+    if (days < 7)   return `${days}일 전`
+    return `${Math.floor(days / 7)}주 전`
+  } catch { return '' }
+}
+
+// ─────────────────────────────────────────────────────────
 // store 거래(contract) → TRANSACTIONS 카드 형태로 변환
 //
 // store deal: { id, type, dealTitle, milestones, statusLabel, myAction, ... }
@@ -379,6 +470,94 @@ function adaptStoreDeal(deal, currentUserId) {
   }
 }
 
+// ─────────────────────────────────────────────────────────
+// 서버 Payout → TRANSACTIONS 카드 형태로 변환
+//
+// 서버 응답 1건:
+//   { id, payoutNo, type, typeLabel, status, statusLabel, amount, netAmount,
+//     toRecipientName/UserId/Phone, toRecipientIsBusiness,
+//     fromUserName, viewerRole, category, dealTitle, reason,
+//     createdAt, ... }
+// ─────────────────────────────────────────────────────────
+function adaptServerPayoutToCard(p) {
+  const role = p.viewerRole === 'sender' ? 'sender' : 'receiver'
+  const otherName = role === 'sender' ? p.toRecipientName : p.fromUserName
+  const initial = (otherName && otherName.charAt(0)) || '?'
+  const isBusiness = role === 'sender' ? !!p.toRecipientIsBusiness : false
+
+  const statusLabel = p.statusLabel || ({
+    completed:   '입금 완료',
+    waiting:     '인증 대기',
+    signing:     '서명 대기',
+    in_progress: '진행 중',
+    cancelled:   '취소됨',
+  }[p.status] || (p.status || '처리 중'))
+
+  const tone = getStatusTone(statusLabel)
+  const rejected = p.status === 'cancelled'
+
+  // 진행률 — 상태 기반 근사값
+  const progress =
+    p.status === 'completed'   ? 100 :
+    p.status === 'in_progress' ? 50  :
+    p.status === 'signing'     ? 20  :
+    p.status === 'waiting'     ? 10  : 0
+
+  // 액션 필요 — 본인이 처리해야 할 게 있으면 myAction 부여
+  // sender 인데 status=signing 이면 상대 서명 대기 (내 액션 X)
+  // receiver 인데 status=signing 이면 서명해야 함 (내 액션 O)
+  let myAction = null
+  if (role === 'receiver') {
+    if (p.status === 'signing')     myAction = { label: '서명하기',  urgent: true,  color: 'brand' }
+    else if (p.status === 'waiting') myAction = { label: '확인하기', urgent: false, color: 'brand' }
+  } else {
+    if (p.status === 'in_progress' && p.category === 'contract') {
+      myAction = { label: '검수하기', urgent: true, color: 'brand' }
+    }
+  }
+
+  // note — 상태별 추가 안내문구
+  let note = null
+  if (p.status === 'signing' && role === 'sender') {
+    note = '상대방이 아직 차용증/계약서를 확인하지 않았어요'
+  } else if (p.status === 'waiting') {
+    note = '수령인이 본인인증 완료 후 자동 입금됩니다'
+  } else if (p.status === 'in_progress' && p.category === 'contract' && role === 'sender') {
+    note = '진행 상황은 채팅방에서 확인할 수 있어요'
+  }
+
+  return {
+    id: p.id,
+    type: p.type,
+    typeLabel: p.typeLabel,
+    typeIcon: p.typeIcon,
+    category: p.category,
+    role,
+    counterparty: {
+      name: otherName || '',
+      initial,
+      kind: isBusiness ? 'business' : 'person',
+      verified: role === 'sender' ? (!!p.toRecipientVerified || !!p.toRecipientUserId) : true,
+    },
+    amount: Number(p.amount || p.netAmount || 0),
+    netAmount: Number(p.netAmount || p.amount || 0),
+    title: p.dealTitle || p.reason || p.typeLabel || '',
+    statusLabel,
+    statusColor: rejected ? '#9B9990' : tone.color,
+    statusBg:    rejected ? '#F2EFE9' : tone.bg,
+    progress,
+    myAction,
+    counterpartyRead: true,
+    updatedAt: formatRelativeTime ? formatRelativeTime(p.createdAt) : '',
+    note,
+    rejected,
+    _fromServer: true,
+    _serverId:   p.id,
+    _txId:       p.id,
+    _createdAt:  p.createdAt,
+  }
+}
+
 export default function Alerts() {
   useNoSwipeBack()
   const theme = getAccountTheme()
@@ -443,6 +622,58 @@ export default function Alerts() {
     () => getMyAlerts({ userId: currentUserId })
   )
 
+  // ── 서버 알림 (4번째 출처) ───────────────────────────
+  //   /api/v1/app/alerts — 페이지 진입 + Pull-to-Refresh + STOMP 'judapay:alert' 수신 시 갱신
+  const [serverAlerts, setServerAlerts] = useState([])
+  const refreshServerAlerts = useCallback(async () => {
+    if (!session.user) return
+    try {
+      const items = await listServerAlerts({ page: 0, size: 50 })
+      setServerAlerts(Array.isArray(items) ? items : (items?.content || items?.data || []))
+    } catch (e) {
+      console.warn('[Alerts] listServerAlerts failed', e?.message)
+    }
+  }, [])
+  useEffect(() => { refreshServerAlerts() }, [refreshServerAlerts])
+  useEffect(() => {
+    const onAlert = (e) => {
+      const a = e?.detail
+      if (!a?.id) return
+      setServerAlerts(prev => {
+        if (prev.some(x => x.id === a.id)) return prev
+        return [a, ...prev]
+      })
+    }
+    window.addEventListener('judapay:alert', onAlert)
+    return () => window.removeEventListener('judapay:alert', onAlert)
+  }, [])
+
+  // ── 서버 payouts (거래 탭) ─────────────────────────
+  //   /api/v1/app/payouts?role=all — 본인 발신/수신 자금집행
+  //   STOMP 메시지(kind=message + payoutId) 수신 시 자동 재조회
+  const [serverPayouts, setServerPayouts] = useState([])
+  const refreshServerPayouts = useCallback(async () => {
+    if (!session.user) return
+    try {
+      const items = await listMyPayouts({ role: 'all', page: 0, size: 50 })
+      setServerPayouts(Array.isArray(items) ? items : (items?.content || items?.data || []))
+    } catch (e) {
+      console.warn('[Alerts] listMyPayouts failed', e?.message)
+    }
+  }, [])
+  useEffect(() => { refreshServerPayouts() }, [refreshServerPayouts])
+  useEffect(() => {
+    const onRealtime = (e) => {
+      const d = e?.detail
+      if (!d || d.kind !== 'message') return
+      if (!d?.message?.payoutId) return
+      // payout 관련 시스템 메시지 → 거래 탭 동기화
+      refreshServerPayouts()
+    }
+    window.addEventListener('judapay:realtime', onRealtime)
+    return () => window.removeEventListener('judapay:realtime', onRealtime)
+  }, [refreshServerPayouts])
+
   // ─────────────────────────────────────────────────────────────────────────────
   // [헷갈림 주의] 시스템 알림 3중 병합 — fromStore + fromAutoPay + fromStatic
   //
@@ -465,28 +696,84 @@ export default function Alerts() {
   // 합쳐진 시스템 알림 — auto-pay 알림 + store alert + 정적 SYSTEM_ALERTS, 시간 역순
   const mergedSystemAlerts = (() => {
     // 생활비 자동지급 알림을 SYSTEM_ALERTS 형태로 변환
-    const fromAutoPay = autoPayAlerts.map(a => ({
-      id: a.id,
-      isRead: false,
-      type: a.type === 'auto_pay_insufficient' ? 'warning' : 'limit',
-      title: a.title,
-      desc: a.body,
-      time: a.time,
-      tag: a.type === 'auto_pay_insufficient' ? '잔액부족' : '자동지급',
-      tagColor: a.type === 'auto_pay_insufficient' ? '#C2410C' : '#047857',
-      tagBg: a.type === 'auto_pay_insufficient' ? '#FFF7ED' : '#ECFDF5',
-      route: a.route,
-      _fromStore: false,
-      _staticSort: staticAlertSortValue(a.time),  // 실시간 timestamp 기반 정렬
-    }))
-    const fromStore = storeAlerts.map(adaptStoreAlert)
-    const fromStatic = SYSTEM_ALERTS.map(a => ({
-      ...a,
-      _fromStore: false,
-      _staticSort: staticAlertSortValue(a.time),
-    }))
-    // fromStore를 배열 앞에 두면 동점(같은 분) 시 store 알림이 앞에 위치
-    return [...fromStore, ...fromAutoPay, ...fromStatic].sort((a, b) => {
+    //   로컬 store(autoPayLivingStore) 기반이므로 로그인 시는 숨김(서버 알림만)
+    const fromAutoPay = !session.user
+      ? autoPayAlerts.map(a => ({
+          id: a.id,
+          isRead: false,
+          type: a.type === 'auto_pay_insufficient' ? 'warning' : 'limit',
+          title: a.title,
+          desc: a.body,
+          time: a.time,
+          tag: a.type === 'auto_pay_insufficient' ? '잔액부족' : '자동지급',
+          tagColor: a.type === 'auto_pay_insufficient' ? '#C2410C' : '#047857',
+          tagBg: a.type === 'auto_pay_insufficient' ? '#FFF7ED' : '#ECFDF5',
+          route: a.route,
+          _fromStore: false,
+          _staticSort: staticAlertSortValue(a.time),
+        }))
+      : []
+    // 로그인 시 — 데모 알림(SYSTEM_ALERTS, storeAlerts) 제외하고 서버 알림만 사용
+    //   비로그인 시만 데모 데이터 폴백 표시.
+    const useDemo = !session.user
+    const fromStore  = useDemo ? storeAlerts.map(adaptStoreAlert) : []
+    const fromStatic = useDemo
+      ? SYSTEM_ALERTS.map(a => ({
+          ...a,
+          _fromStore: false,
+          _staticSort: staticAlertSortValue(a.time),
+        }))
+      : []
+    // 4번째 출처 — 서버 발행 알림 (PayoutService/PaymentController/WalletService 가 생성)
+    //   화면이 카드 렌더링에서 보는 모든 a.xxx 필드를 100% 채운다.
+    const fromServer = serverAlerts.map(a => {
+      const route = a.deepLink || null
+      // walletRoute — kind=wallet_charged 인 경우 별도 wallet 화면으로 분기 가능
+      const walletRoute = a.kind === 'wallet_charged' ? (a.deepLink || '/wallet') : null
+      // txId — refType=payout/payment 일 때 거래 상세로 점프
+      const txId = (a.refType === 'payout' || a.refType === 'payment') ? a.refId : null
+      // direction — 송금/입금 카드 표시용 (사용자 관점)
+      const direction = a.kind === 'payout_received' ? 'in'
+                      : a.kind === 'payout_sent'     ? 'out'
+                      : a.kind === 'wallet_charged'  ? 'in'
+                      :                                 null
+      return {
+        id:        a.id,
+        isRead:    !!a.read,
+        read:      !!a.read,                  // raw boolean 별칭
+        type:      mapServerKindToType(a.kind),
+        kind:      a.kind,                     // raw server kind
+        title:     a.title,
+        body:      a.body,                     // raw
+        desc:      a.body,                     // SYSTEM_ALERTS 와 호환
+        label:     a.title,                    // 일부 카드가 label 사용
+        time:      toRelativeTime(a.createdAt),
+        createdAt: a.createdAt,                // raw ISO
+        updatedAt: a.createdAt,                // 알림은 갱신 개념 없음 — createdAt 그대로
+        icon:      a.icon || null,             // 이모지
+        emoji:     a.icon || null,             // 별칭
+        severity:  a.severity || 'info',
+        tag:       mapServerKindToTag(a.kind),
+        tagColor:  mapSeverityColor(a.severity, 'fg'),
+        tagBg:     mapSeverityColor(a.severity, 'bg'),
+        route,
+        deepLink:  route,
+        walletRoute,
+        txId,
+        direction,
+        myAction:    null,                     // 알림 자체에는 액션 버튼 없음 (거래 탭이 처리)
+        inviteMeta:  null,                     // 초대형 알림은 서버에서 별도 kind 필요 (미구현)
+        refType:     a.refType || null,
+        refId:       a.refId   || null,
+        _fromServer: true,
+        _serverId:   a.id,
+        _createdAt:  a.createdAt,
+        _fromStore:  false,
+        _staticSort: 0,                        // 서버 항목은 _createdAt 기반
+      }
+    })
+    // 서버 알림을 최상단에 두기 — 정렬은 어차피 시간순으로 다시 함
+    return [...fromServer, ...fromStore, ...fromAutoPay, ...fromStatic].sort((a, b) => {
       // store 항목은 _createdAt 사용 (최신이 위)
       // 정적 항목은 _staticSort (작을수록 최신)
       // 둘 다 같이 정렬: store 거를 정확한 timestamp 기반,
@@ -525,11 +812,21 @@ export default function Alerts() {
   //   - counterparty: role에 따라 상대방 정보 다르게 추출
   //   - counterpartyRead: 데모에서는 항상 true, 실제는 read 상태 API 필요
   // ─────────────────────────────────────────────────────────────────────────────
-  // 거래 탭: 정적 TRANSACTIONS + store 거래형 합침
-  const allTx = [
-    ...storeDeals.map(d => adaptStoreDeal(d, currentUserId)),
-    ...TRANSACTIONS,
-  ]
+  // 거래 탭 — 출처 우선순위:
+  //   로그인 시:   서버 payouts 만 사용 (실데이터)
+  //   비로그인 시: 로컬 store deals + 정적 TRANSACTIONS (데모 모드)
+  //
+  // 같은 _txId 가 서버/로컬 양쪽에 있으면 서버 우선 (dedup).
+  const useDemoTx = !session.user
+  const fromServerTx = serverPayouts.map(adaptServerPayoutToCard)
+  const serverIds = new Set(fromServerTx.map(t => t._txId).filter(Boolean))
+  const fromStoreTx = useDemoTx
+    ? storeDeals
+        .map(d => adaptStoreDeal(d, currentUserId))
+        .filter(t => !serverIds.has(t._txId))
+    : []
+  const staticTx = useDemoTx ? TRANSACTIONS : []
+  const allTx = [...fromServerTx, ...fromStoreTx, ...staticTx]
 
   const filteredTx = allTx.filter(tx => {
     if (roleFilter === 'all') return true
@@ -561,18 +858,44 @@ export default function Alerts() {
     return aMinAgo - bMinAgo   // 분 단위 작을수록 최신 → 위
   })
 
-  const actionCount = allTx.filter(tx => !!tx.myAction).length
-  const txCount = allTx.length
+  // ── 탭 카운트 = 화면에 실제 표시되는 리스트 갯수 ──
+  //   allTx 와 mergedSystemAlerts 는 위에서 데모/서버 분기가 이미 적용됨.
+  //   즉 로그인 시는 서버 데이터만, 비로그인 시는 데모. 항상 보이는 카드와 1:1 일치.
+  const isAuthed = !!session.user
+  const badges = useUnreadBadges()
+  const actionCount      = allTx.filter(tx => !!tx.myAction).length
+  const txCount          = allTx.length
   const unreadAlertCount = mergedSystemAlerts.filter(a => !a.isRead).length
+
+  // 알림 화면 진입 시 서버 카운터 refresh (BottomTab + 헤더 모두 갱신)
+  useEffect(() => { refreshUnread() }, [])
+  // payouts 또는 알림이 갱신되면 카운터도 다시 동기화
+  useEffect(() => {
+    const onChange = () => refreshUnread()
+    window.addEventListener('judapay:alert', onChange)
+    window.addEventListener('judapay:realtime', onChange)
+    return () => {
+      window.removeEventListener('judapay:alert', onChange)
+      window.removeEventListener('judapay:realtime', onChange)
+    }
+  }, [])
 
   // 시스템 알림 클릭
   const handleAlertClick = (a) => {
-    // store alert이면 읽음 처리
+    // store alert이면 store 읽음 처리
     if (a._fromStore) {
       markAlertRead(a.id)
     }
+    // 서버 알림이면 서버 read API + 로컬 상태 즉시 반영 + 배지 -1
+    if (a._fromServer && a._serverId) {
+      const wasUnread = !a.isRead
+      setServerAlerts(prev => prev.map(x =>
+        x.id === a._serverId ? { ...x, read: true } : x
+      ))
+      if (wasUnread) decrementAlerts()
+      markServerAlertRead(a._serverId).catch(() => {})
+    }
     if (a.route) navigate(a.route)
-    // store alert도 거래 상세로 연결하고 싶으면 추후 라우트 추가
   }
 
   return (
@@ -712,16 +1035,18 @@ export default function Alerts() {
                               <path d="M10 6H3 M6 2L3 6l3 4" stroke={theme.brandDark} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
                             </svg>
                           )}
-                          {fundColor && (
+                          {(meta.label || meta.emoji) && (
                             <span style={{
-                              display:'inline-flex', alignItems:'center', gap:'3px',
-                              padding:'2px 7px',
-                              background: fundColor.bg,
-                              color: fundColor.main,
-                              borderRadius:'5px',
-                              fontSize:'10px', fontWeight:700,
+                              display:'inline-flex', alignItems:'center', gap:'4px',
+                              padding:'3px 10px',
+                              background: fundColor?.bg || '#F2EFE9',
+                              color:      fundColor?.main || '#555550',
+                              borderRadius:'6px',
+                              fontSize:'12px', fontWeight:700,
+                              lineHeight: 1.2,
                             }}>
-                              {meta.emoji} {meta.label}
+                              {meta.emoji && <span style={{ fontSize:'13px' }}>{meta.emoji}</span>}
+                              {meta.label}
                             </span>
                           )}
                         </div>

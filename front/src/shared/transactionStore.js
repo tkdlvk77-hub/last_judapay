@@ -70,6 +70,9 @@ export const TX_TYPE_META = {
   living:           { icon: '🛒', labelKo: '생활비',     labelEn: 'Living' },
   personalLend:     { icon: '💸', labelKo: '빌려주기',   labelEn: 'Lend' },
   realestate:       { icon: '🏠', labelKo: '부동산',     labelEn: 'Real Estate' },
+  // 기타 (Misc / OtherExpense)
+  misc:             { icon: '📦', labelKo: '기타지출',   labelEn: 'Misc' },
+  otherExpense:     { icon: '💼', labelKo: '기타비용',   labelEn: 'Other Expense' },
 }
 
 // ─────────────────────────────────────────────────────────
@@ -129,20 +132,36 @@ export const TYPE_TO_CATEGORY = {
 //   - status: 'completed' / 'waiting' / 'scheduled'
 // ─────────────────────────────────────────────────────────
 export const TX_CATEGORY = {
+  // 계약형 — milestones / dealTitle / dealStatus / 서명·검수 흐름
   freelance:    'contract',
   marketing:    'contract',
   lend:         'contract',
+  vendorLoan:   'contract',
   support:      'contract',
   realestate:   'contract',
   invest:       'contract',
   personalLend: 'contract',
 
+  // 통지형 — 단순 송금 + 시스템 메시지 1건
   bonus:        'notification',
   condolence:   'notification',
   otherIncome:  'notification',
   gift:         'notification',
+  living:       'notification',
   salary:       'notification',
   rent:         'notification',
+  rentLease:    'notification',
+  subscription: 'notification',
+  telecom:      'notification',
+  utility:      'notification',
+  insurancePremium: 'notification',
+  insurance4:   'notification',
+  tax:          'notification',
+  travelMeal:   'notification',
+  welfare:      'notification',
+  otherOps:     'notification',
+  misc:         'notification',
+  otherExpense: 'notification',
 }
 
 export function getTxCategory(type) {
@@ -395,7 +414,117 @@ export function addTransaction(params) {
   }
 
   notify()
+
+  // ─── 서버 동기화 (로그인 시) ────────────────────────────
+  //   tx 객체를 만들고 로컬 store 갱신 후, 백그라운드로 서버에도 정식 등록.
+  //   → 서버가 payout INSERT + 메시지 INSERT + 알림 INSERT + STOMP fanout 함.
+  //   → 다른 디바이스/세션에서도 같은 거래가 즉시 보임.
+  //
+  //   step-up PIN 은 호출자가 미리 받았다는 전제 (자금집행 화면이 PinStep 통과 후 호출).
+  //   서버는 mfaVerified=true 쿠키(jp_app_stepup)를 요구.
+  //
+  //   실패 시 — 로컬은 그대로 유지. 콘솔 경고만. (네트워크 끊김/서버 다운 graceful)
+  //
+  //   주의: addTransaction 은 sync 함수이므로 await 안 함. tx 객체에 _serverPromise 만 첨부.
+  try {
+    tx._serverPromise = _syncToServer(tx, params).catch(err => {
+      // MFA_REQUIRED / 401 — step-up 안 거친 데모 시나리오. 흔하므로 debug 레벨.
+      if (err?.code === 'MFA_REQUIRED' || err?.status === 401) {
+        console.debug('[transactionStore] server sync skipped (no step-up cookie). Local store only.')
+      } else {
+        console.warn('[transactionStore] server sync failed:', err?.code || '', err?.message)
+      }
+    })
+  } catch (e) {
+    // import 실패 등 — 폴백
+  }
+
   return tx
+}
+
+// ─────────────────────────────────────────────────────────
+// 서버 동기화 — lazy import 로 circular dep 회피
+// ─────────────────────────────────────────────────────────
+async function _syncToServer(tx, params) {
+  // 데모 시드/내부 플래그 — 서버 호출 금지 (MFA_REQUIRED 401 폭주 방지)
+  if (params?._skipServerSync || tx?._isDemoSeed) return null
+  // 동적 import — services 모듈이 store 를 다시 import 하지 않도록
+  const { session } = await import('../services/api')
+  if (!session.user) return null   // 비로그인 시 서버 동기화 스킵 (데모 모드)
+
+  const { executePayout } = await import('../services/payout')
+
+  // tx → 서버 PayoutReq 매핑
+  const milestonesReq = Array.isArray(params.milestones)
+    ? params.milestones.map(m => ({
+        label:      m.label,
+        amount:     Number(m.amount || 0),
+        targetDate: m.targetDate || null,
+        status:     m.status     || 'pending',
+      }))
+    : []
+
+  // 메뉴별 메타 (supportMeta/investMeta/rentalMeta) — 서버는 metadata 컬럼에 JSON 저장
+  const metaPayload = {}
+  if (params.supportMeta) metaPayload.supportMeta = params.supportMeta
+  if (params.investMeta)  metaPayload.investMeta  = params.investMeta
+  if (params.rentalMeta)  metaPayload.rentalMeta  = params.rentalMeta
+  if (params.categories)  metaPayload.categories  = params.categories
+  if (params.safety)      metaPayload.safety      = params.safety
+  if (params.timeline)    metaPayload.timeline    = params.timeline
+
+  const req = {
+    type:        params.type,
+    typeLabel:   tx.typeLabel,
+    typeIcon:    tx.typeIcon,
+    category:    tx.category,
+    mainCat:     tx.mainCat,
+    subCat:      tx.subCat,
+    amount:      Number(params.amount),
+    whtAmount:   Number(params.whtAmount || 0),
+    netAmount:   Number(params.netAmount || params.amount),
+    recipient: {
+      userId:     params.recipient?.userId   || null,
+      phone:      params.recipient?.phone    || null,
+      name:       params.recipient?.name,
+      verified:   !!params.recipient?.verified,
+      isBusiness: !!params.recipient?.isBusiness,
+    },
+    payDateMode:    params.payDateMode || 'immediate',
+    scheduledDate:  params.scheduledDate || null,
+    status:         params.status || null,
+    statusLabel:    params.statusLabel || null,
+    reason:         params.reason,
+    walletId:       params.walletId,
+    walletLabel:    params.walletLabel,
+    dealTitle:       params.dealTitle,
+    dealDescription: params.dealDescription,
+    contractDocId:   params.contractDocId,
+    contractExpires: params.contractExpires,
+    contractSigned:  !!params.contractSigned,
+    contractFile:    params.contractFile,
+    dealStatus:      params.dealStatus,
+    milestones:      milestonesReq,
+    // 메뉴별 추가 메타 — 서버는 metadata JSONB 에 저장, 클라가 다시 fetch 시 그대로 복원
+    metadata:        Object.keys(metaPayload).length > 0 ? metaPayload : null,
+  }
+
+  // step-up PIN 은 호출자가 PinStep 통과 후 set 한 임시 토큰 사용.
+  // 여기서는 PIN 을 다시 받지 못하므로, 서버 쿠키(jp_app_stepup) 가 이미 발급됐다고 가정.
+  // 발급 안 됐으면 서버가 401 MFA_REQUIRED 응답 → catch 에서 무시.
+  //
+  // 호환성: 호출자가 step-up 안 거치고 직접 addTransaction 호출하는 경우(데모 시나리오)
+  // 서버 등록은 실패하지만 로컬은 그대로 유지.
+  return await executePayout(req, { _skipStepUp: true })
+    .then(saved => {
+      // 서버 응답에 진짜 UUID payoutId 가 있으면 tx._serverId 에 저장 (추후 매칭용)
+      if (saved?.id) {
+        tx._serverId = saved.id
+        tx._serverPayoutNo = saved.payoutNo
+        tx._serverThreadId = saved.threadId
+      }
+      return saved
+    })
 }
 
 // ─────────────────────────────────────────────────────────
@@ -994,6 +1123,14 @@ export function seedDemoTransactions() {
     _seeded = true
     return
   }
+  // 로그인 상태면 데모 시드 생성 자체를 스킵 — 서버 데이터가 단일 출처.
+  //   (시드가 addTransaction 을 거치며 서버 POST 까지 시도해 MFA_REQUIRED 401 폭주가 일어났음)
+  try {
+    if (sessionStorage.getItem('judapay.currentUser')) {
+      _seeded = true
+      return
+    }
+  } catch {}
 
   const now = new Date()
 
@@ -1139,6 +1276,7 @@ export function seedDemoTransactions() {
   allSeeds.forEach(s => {
     const ts = new Date(now.getTime() + s.offsetMinutes * 60 * 1000).toISOString()
     const tx = addTransaction({
+      _skipServerSync: true,   // 데모 시드 — 서버 POST 시도 금지
       type: s.type,
       fromUserId: 'biz_juda',
       fromUserName: '㈜주다컴퍼니',

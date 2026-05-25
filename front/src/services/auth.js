@@ -15,6 +15,7 @@ import { api, session } from './api'
 export async function signup(req) {
   const res = await api.post('/api/v1/app/auth/signup', req)
   session.setUser(res)
+  try { window.dispatchEvent(new Event('judapay:auth')) } catch {}
   return res
 }
 
@@ -24,6 +25,7 @@ export async function signup(req) {
 export async function login(req) {
   const res = await api.post('/api/v1/app/auth/login', req)
   session.setUser(res)
+  try { window.dispatchEvent(new Event('judapay:auth')) } catch {}
   return res
 }
 
@@ -52,6 +54,7 @@ export async function loginPin(req) {
     return res
   }
   session.setUser(res)
+  try { window.dispatchEvent(new Event('judapay:auth')) } catch {}
   return res
 }
 
@@ -64,6 +67,7 @@ export async function loginPin(req) {
 export async function logout() {
   try { await api.post('/api/v1/app/auth/logout', {}) } catch {}
   session.clear()
+  try { window.dispatchEvent(new Event('judapay:auth')) } catch {}
   try {
     const { clearStoredPin } = await import('./biometric')
     await clearStoredPin()

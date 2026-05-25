@@ -50,12 +50,20 @@ const BANK_OPTIONS = [
   { code: '092', label: '토스뱅크' },
 ]
 
+// 010 휴대폰 입력 → 010-XXXX-XXXX 자동 포맷.
+function formatPhone(raw) {
+  const digits = (raw || '').replace(/\D/g, '').slice(0, 11)
+  if (digits.length <= 3) return digits
+  if (digits.length <= 7) return `${digits.slice(0,3)}-${digits.slice(3)}`
+  return `${digits.slice(0,3)}-${digits.slice(3,7)}-${digits.slice(7)}`
+}
+
 export default function SignupPersonal() {
   const navigate = useNavigate()
   const [step, setStep] = useState(1)
 
   // ── 1단계: 본인인증 ────────────────────────────
-  const [phone, setPhone] = useState('010-1234-5678')   // 데모 prefill
+  const [phone, setPhone] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   const [authDone, setAuthDone] = useState(false)
   const [authError, setAuthError] = useState(null)
@@ -186,11 +194,12 @@ export default function SignupPersonal() {
               style={{ ...S.fieldInput, marginBottom:'14px' }}
               value={phone}
               onChange={e => {
-                setPhone(e.target.value)
+                setPhone(formatPhone(e.target.value))
                 if (alreadyRegistered) { setAlreadyRegistered(false); setAuthError(null) }
               }}
               placeholder="010-0000-0000"
-              inputMode="tel"
+              inputMode="numeric"
+              maxLength={13}
               disabled={authLoading || authDone}
             />
 

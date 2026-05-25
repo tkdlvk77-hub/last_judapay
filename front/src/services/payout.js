@@ -52,13 +52,18 @@ import { stepUpWithPin, stepUpWithBio, bridgeAvailable } from './biometric'
  */
 export async function executePayout(req, opts = {}) {
   // 1. step-up MFA 통과 — jp_app_stepup 쿠키 발급
-  if (opts.faceId) {
-    if (!bridgeAvailable()) throw new Error('Face ID 사용 불가 — PIN 으로 진행해주세요')
-    await stepUpWithBio({ reason: '자금집행 인증' })
-  } else if (opts.pin) {
-    await stepUpWithPin(opts.pin)
-  } else {
-    throw new Error('step-up 인증이 필요합니다 (PIN 또는 Face ID)')
+  //    _skipStepUp=true 인 경우 (transactionStore.addTransaction 백그라운드 동기화 등):
+  //    호출자가 이미 PinStep 을 통과했고 jp_app_stepup 쿠키가 발급된 상태로 간주.
+  //    실패 시 서버가 401 MFA_REQUIRED 응답.
+  if (!opts._skipStepUp) {
+    if (opts.faceId) {
+      if (!bridgeAvailable()) throw new Error('Face ID 사용 불가 — PIN 으로 진행해주세요')
+      await stepUpWithBio({ reason: '자금집행 인증' })
+    } else if (opts.pin) {
+      await stepUpWithPin(opts.pin)
+    } else {
+      throw new Error('step-up 인증이 필요합니다 (PIN 또는 Face ID)')
+    }
   }
 
   // 2. POST /api/v1/app/payouts
@@ -71,4 +76,27 @@ export async function executePayout(req, opts = {}) {
 /** 자금집행 1건 상세. */
 export async function getPayout(id) {
   return await api.get(`/api/v1/app/payouts/${id}`)
+}
+
+/**
+ * 본인이 발신/수신/전체 한 자금집행 리스트 (페이지네이션).
+ *
+ *   @param {Object}  opts
+ *   @param {string=} opts.role     'all' | 'sent' | 'received' (기본 'all')
+ *   @param {number=} opts.page     기본 0
+ *   @param {number=} opts.size     기본 20
+ *
+ *   서버 응답 1건 (viewerRole 추가됨):
+ *     { id, payoutNo, type, typeLabel, typeIcon, category, mainCat, subCat,
+ *       amount, whtAmount, netAmount, currency, status, statusLabel,
+ *       payDateMode, scheduledDate, reason, walletId, walletLabel,
+ *       dealTitle, dealDescription, contractDocId, contractExpires, contractSigned,
+ *       toRecipientUserId/Phone/Name, fromUserId/Name, viewerRole, createdAt }
+ */
+export async function listMyPayouts({ role = 'all', page = 0, size = 20 } = {}) {
+  const qs = new URLSearchParams()
+  qs.set('role', role)
+  qs.set('page', String(page))
+  qs.set('size', String(size))
+  return await api.get(`/api/v1/app/payouts?${qs.toString()}`)
 }

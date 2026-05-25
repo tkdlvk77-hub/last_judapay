@@ -89,7 +89,7 @@ export default function Login() {
   const [phase, setPhase] = useState('phone')
 
   // 1단계 — 본인인증
-  const [phone, setPhone] = useState('010-1234-5678')   // 데모 prefill
+  const [phone, setPhone] = useState('')
   const [identity, setIdentity] = useState(null)
   const [phoneError, setPhoneError] = useState(null)
   const [phoneLoading, setPhoneLoading] = useState(false)

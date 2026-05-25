@@ -103,7 +103,16 @@ export default function More() {
   const navigate = useNavigate()
   const [showLangSheet, setShowLangSheet] = useState(false)
   const [currentLang, setCurrentLang] = useState(getLang())
-  const { logout, userType } = useUser()
+  const { logout, userType, currentUser } = useUser()
+  // 표시용 이름/부제 — 로그인 시 currentUser.name, 없으면 데모 폴백
+  const displayName = (userType === 'business' || userType === 'institution')
+        ? (currentUser?.company || currentUser?.name || '㈜주다컴퍼니')
+        : (currentUser?.name || '이호형')
+  const displaySub = userType === 'business'
+        ? `법인 계정${currentUser?.bizNumber ? ' · 사업자번호 ' + currentUser.bizNumber : ''}`
+        : userType === 'institution'
+            ? '기관 계정'
+            : 'KYC 2단계 · 개인 계정'
   const bizRole = userType === 'business'
     ? (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('bizRole') || '' : '')
     : ''
@@ -200,10 +209,10 @@ export default function More() {
               </div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:'16px', fontWeight:700, color:'#fff', marginBottom:'2px' }}>
-                  {userType === 'business' ? '㈜주다컴퍼니' : '이호형'}
+                  {displayName}
                 </div>
                 <div style={{ fontSize:'11px', color:'rgba(255,255,255,0.65)' }}>
-                  {userType === 'business' ? '법인 계정 · 사업자번호 123-45-67890' : 'KYC 2단계 · 개인 계정'}
+                  {displaySub}
                 </div>
               </div>
               {/* 인증 완료 배지 */}

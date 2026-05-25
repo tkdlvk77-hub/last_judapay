@@ -4,6 +4,7 @@ import MccBlock, { DEFAULT_MCC as MCC_DEFAULT } from '../../shared/execute/MccBl
 import WalletPicker from '../../shared/WalletPicker'
 import { getWalletById } from '../../shared/walletsData'
 import { addTransaction } from '../../shared/transactionStore'
+import { stepUpWithPin } from '../../services/biometric'
 import DarkHeader from '../../components/DarkHeader'
 import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS, GRADIENTS } from '../../design/tokens'
@@ -107,6 +108,8 @@ export default function ExecuteLend() {
   const [mccItems, setMccItems] = useState(MCC_DEFAULT)
   const [singleLimit, setSingleLimit] = useState(null)
   const [pin, setPin] = useState('')
+  const [pinError, setPinError] = useState('')
+  const [pinBusy, setPinBusy] = useState(false)
 
   if (!recipient) return null
 
@@ -251,12 +254,35 @@ export default function ExecuteLend() {
   }
 
   const pinInput = (k) => {
-    if (k === 'del') { setPin(p => p.slice(0,-1)); return }
+    if (pinBusy) return
+    if (k === 'del') { setPinError(''); setPin(p => p.slice(0,-1)); return }
     if (k === null) return
     if (pin.length >= 6) return
     const next = pin + k
     setPin(next)
-    if (next.length === 6) setTimeout(() => { setPin(''); pushToStore(); advanceStep('done') }, 400)
+    if (next.length === 6) {
+      // 6자리 입력 완료 → 서버 step-up 호출 → 성공 시 jp_app_stepup 쿠키 발급 →
+      // pushToStore 가 addTransaction → _syncToServer 로 실제 payout 을 DB 에 저장한다.
+      // 기존 코드는 step-up 을 건너뛰어 서버가 항상 MFA_REQUIRED 로 거절했고,
+      // 그래서 빌려주기 집행해도 양쪽 홈에 데이터가 안 떴다.
+      setPinBusy(true)
+      setPinError('')
+      setTimeout(async () => {
+        try {
+          await stepUpWithPin(next)
+          setPin('')
+          pushToStore()
+          advanceStep('done')
+        } catch (err) {
+          // 잘못된 PIN: 사용자에게 알려주고 다시 입력 받기.
+          const msg = err?.message || err?.code || 'PIN이 일치하지 않습니다.'
+          setPin('')
+          setPinError(msg)
+        } finally {
+          setPinBusy(false)
+        }
+      }, 200)
+    }
   }
 
   const goBack = () => {
@@ -1073,16 +1099,24 @@ export default function ExecuteLend() {
 
           <div style={{ fontSize:'13px', color: COLORS.t4, marginBottom:'20px' }}>6자리 비밀번호</div>
 
-          <div style={{ display:'flex', gap:'16px', marginBottom:'24px' }}>
+          <div style={{ display:'flex', gap:'16px', marginBottom:'10px' }}>
             {Array.from({ length:6 }).map((_, i) => (
               <div key={i} style={{
                 width:'14px', height:'14px',
                 borderRadius:'50%',
-                background: i < pin.length ? theme.brand : 'transparent',
-                border: i < pin.length ? `2px solid ${theme.brand}` : `2px solid ${COLORS.border}`,
+                background: i < pin.length ? (pinError ? '#EF4444' : theme.brand) : 'transparent',
+                border: i < pin.length
+                  ? `2px solid ${pinError ? '#EF4444' : theme.brand}`
+                  : `2px solid ${pinError ? '#FCA5A5' : COLORS.border}`,
                 transition:'all .15s',
               }} />
             ))}
+          </div>
+
+          {/* PIN 오류 / 진행중 상태 표시 */}
+          <div style={{ minHeight:'18px', marginBottom:'14px', fontSize:'12px',
+            color: pinError ? '#DC2626' : COLORS.t4, fontWeight: pinError ? 600 : 400 }}>
+            {pinBusy ? '인증 중...' : (pinError || '')}
           </div>
 
           <button style={{

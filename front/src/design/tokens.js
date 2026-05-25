@@ -124,6 +124,22 @@ export const FUND_COLORS = {
     bg: '#EEF2FF',
     border: '#C7D2FE',
   },
+  rentLease:    { main:'#3730A3', bg:'#EEF2FF', border:'#C7D2FE' }, // 렌트&리스
+  subscription: { main:'#5D2E92', bg:'#EEE8F7', border:'#D1B8EE' }, // 구독료
+  telecom:      { main:'#2D6BB0', bg:'#EDF3FA', border:'#B5CFE8' }, // 통신비
+  utility:      { main:'#854F0B', bg:'#FFF4E0', border:'#F7D98A' }, // 공과금
+  insurancePremium: { main:'#555550', bg:'#F2EFE9', border:'#D7D2C8' }, // 보험료
+  insurance4:   { main:'#555550', bg:'#F2EFE9', border:'#D7D2C8' }, // 4대보험
+  tax:          { main:'#A02929', bg:'#FFE5E5', border:'#FCA5A5' }, // 세금
+  vendorLoan:   { main:'#C8821A', bg:'#FFF4E0', border:'#F7D98A' }, // 거래처 대여
+  welfare:      { main:'#9D174D', bg:'#FCE7F3', border:'#F9A8D4' }, // 복리후생
+  travelMeal:   { main:'#854F0B', bg:'#FFF7E5', border:'#F7D98A' }, // 출장식대
+  otherOps:     { main:'#555550', bg:'#F2EFE9', border:'#D7D2C8' }, // 기타 정기지출
+  otherIncome:  { main:'#5D2E92', bg:'#EEE8F7', border:'#D1B8EE' }, // 기타소득
+  bonus:        { main:'#DB2777', bg:'#FCE7F3', border:'#F9A8D4' }, // (중복 시 무시)
+  condolence:   { main:'#9D174D', bg:'#FCE7F3', border:'#F9A8D4' }, // 경조사비
+  misc:         { main:'#555550', bg:'#F2EFE9', border:'#D7D2C8' }, // 기타지출
+  otherExpense: { main:'#555550', bg:'#F2EFE9', border:'#D7D2C8' }, // 기타비용
 }
 
 // ─── 그라데이션 ─────────────────────────────────────────

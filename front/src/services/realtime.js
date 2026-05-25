@@ -6,11 +6,14 @@
 //
 // 이벤트 fanout:
 //   - judapay:realtime  (커스텀 이벤트) — 모든 구독자가 수신 가능
-//     detail = { kind: 'message', threadId, threadKey, message }
+//     detail (메시지) = { kind: 'message', threadId, threadKey, message }
+//     detail (알림)   = { kind: 'alert',   alert }
+//   - 편의 이벤트 — judapay:alert (kind=alert 만 발행됨)
 //
 // 사용처:
 //   - main.jsx (또는 로그인 직후) → connectRealtime()
-//   - Messages.jsx 등에서 window.addEventListener('judapay:realtime', ...)
+//   - Messages.jsx — kind='message' 만 처리
+//   - Alerts.jsx   — 'judapay:alert' 이벤트 또는 kind='alert'
 // ─────────────────────────────────────────────────────────
 import { Client } from '@stomp/stompjs'
 import SockJS from 'sockjs-client/dist/sockjs'
@@ -53,6 +56,10 @@ export function connectRealtime() {
         // 글로벌 fanout
         try {
           window.dispatchEvent(new CustomEvent('judapay:realtime', { detail: data }))
+          // 편의 이벤트 — 알림 전용 채널
+          if (data?.kind === 'alert') {
+            window.dispatchEvent(new CustomEvent('judapay:alert', { detail: data?.alert || null }))
+          }
         } catch {}
       })
     },

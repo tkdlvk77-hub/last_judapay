@@ -1,9 +1,179 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { PhoneShell } from '../design/components'
 import { COLORS, RADIUS, SHADOWS, GRADIENTS, FUND_COLORS, progressGradient } from '../design/tokens'
 import { getAccountTheme } from '../design/accountTokens'
 import { getTransactionById, TX_TYPE_META, formatRelativeTime } from './transactionStore'
+import { getPayout } from '../services/payout'
+import { session } from '../services/api'
+
+// UUID 형식 판별 (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+// 안전한 JSON 파서 — 서버 metadata 가 string 또는 object 일 수 있음
+function _safeParse(maybeJson) {
+  if (!maybeJson) return {}
+  if (typeof maybeJson === 'object') return maybeJson
+  try { return JSON.parse(maybeJson) || {} } catch { return {} }
+}
+
+// 서버 Payout → TransactionDetail 이 기대하는 tx 형태로 변환 (전체 필드 매핑)
+function adaptServerPayoutToTx(p) {
+  if (!p) return null
+  const meId = session.user?.userId
+  const role = meId && p.fromUserId === meId ? 'sender'
+             : (meId && p.toRecipientUserId === meId ? 'receiver' : 'sender')
+
+  const counterparty = role === 'sender'
+    ? {
+        name:     p.toRecipientName || '',
+        initial:  p.toRecipientInitial || (p.toRecipientName && p.toRecipientName.charAt(0)) || '?',
+        kind:     p.toRecipientIsBusiness ? 'business' : 'person',
+        verified: !!p.toRecipientVerified || !!p.toRecipientUserId,
+        freelancer: p.type === 'freelance' && !p.toRecipientIsBusiness,
+        avatarBg: p.toRecipientAvatarBg || null,
+        avatarFg: p.toRecipientAvatarFg || null,
+      }
+    : {
+        name:     p.fromUserName || '',
+        initial:  (p.fromUserName && p.fromUserName.charAt(0)) || '?',
+        kind:     p.fromUserType === 'business' ? 'business' : 'person',
+        verified: true,
+        avatarBg: null,
+        avatarFg: null,
+      }
+
+  // 진행률 — 마일스톤 paid 비율 우선, 없으면 status 기반 근사
+  const milestones = Array.isArray(p.milestones) ? p.milestones : []
+  let progress
+  if (milestones.length > 0) {
+    const paid = milestones.filter(m => m.status === 'paid').reduce((s, m) => s + Number(m.amount || 0), 0)
+    progress = p.amount > 0 ? Math.round((paid / p.amount) * 100) : 0
+  } else {
+    progress =
+      p.status === 'completed'   ? 100 :
+      p.status === 'in_progress' ? 50  :
+      p.status === 'signing'     ? 20  :
+      p.status === 'waiting'     ? 10  : 0
+  }
+
+  // 마일스톤 → splits (TX_DETAILS 의 splits 와 동일 모양)
+  const splits = milestones.map((m, i) => ({
+    id:       m.id || `m${i}`,
+    label:    m.label || `${i + 1}차`,
+    pct:      p.amount > 0 ? Math.round((m.amount / p.amount) * 100) : 0,
+    amount:   Number(m.amount || 0),
+    status:   m.status === 'paid'      ? 'done'
+            : m.status === 'reviewing' ? 'review'
+            : m.status === 'rejected'  ? 'rejected'
+            :                            'pending',
+    date:     m.paidAt || null,
+    deadline: m.targetDate || null,
+    note:     m.metadata ? (_safeParse(m.metadata).note || null) : null,
+  }))
+
+  // received = paid milestones 합 (없으면 status 기반 추정)
+  const received = splits.length > 0
+    ? splits.filter(s => s.status === 'done').reduce((a, s) => a + s.amount, 0)
+    : (p.status === 'completed' ? Number(p.netAmount || p.amount || 0) : 0)
+
+  // 타임라인 구성
+  const timeline = []
+  if (p.completedAt) timeline.push({ time: p.completedAt, label: '지급 완료', type: 'done' })
+  // 마일스톤별 이벤트도 timeline 에 추가
+  for (const m of milestones) {
+    if (m.paidAt) {
+      timeline.push({ time: m.paidAt, label: `${m.label} ${fmt(m.amount)}원 자동 입금`, type: 'done' })
+    } else if (m.targetDate) {
+      timeline.push({ time: m.targetDate, label: `${m.label} 마감 예정`, type: 'pending' })
+    }
+  }
+  if (p.requestedAt || p.createdAt) {
+    timeline.push({
+      time: p.requestedAt || p.createdAt,
+      label: p.category === 'contract' ? '계약서 발송' : '자금집행 발의',
+      type: 'done',
+    })
+  }
+
+  // 메타데이터 — investMeta / supportMeta / rentalMeta 등
+  const meta = _safeParse(p.metadata)
+
+  return {
+    id:           p.id,
+    type:         p.type,
+    typeLabel:    p.typeLabel,
+    typeIcon:     p.typeIcon,
+    category:     p.category,
+    mainCat:      p.mainCat,
+    subCat:       p.subCat,
+    role,
+    counterparty,
+    title:        p.dealTitle || p.typeLabel || p.reason || '',
+    dealTitle:    p.dealTitle,
+    dealDescription: p.dealDescription || p.reason || '',
+    description:  p.dealDescription || p.reason || '',
+    total:        Number(p.amount || 0),
+    amount:       Number(p.amount || 0),
+    whtAmount:    Number(p.whtAmount || 0),
+    netAmount:    Number(p.netAmount || p.amount || 0),
+    received,
+    executedAmount: received,
+    progress,
+    statusLabel:  p.statusLabel || ({
+      completed:   '입금 완료',
+      waiting:     '인증 대기',
+      signing:     '계약 서명 대기',
+      in_progress: '진행 중',
+      cancelled:   '취소됨',
+    }[p.status] || (p.status || '처리 중')),
+    status:       p.status,
+    rejected:     p.status === 'cancelled' || p.dealStatus === 'rejected',
+    counterpartyRead: true,
+    splits,
+    milestones:   splits,         // 호환용 별칭
+    timeline,
+    safety: [
+      '주다페이 신탁 분리 보관 (라이센스)',
+      '5년 자동 증거 보관',
+      '이상거래 자동 감지',
+      ...(p.category === 'contract' ? ['분쟁 시 메시지 + 계약서 자동 증거 보관'] : []),
+    ],
+    contractFile:    p.contractFile  || null,
+    contractDocId:   p.contractDocId || null,
+    contractExpires: p.contractExpires || null,
+    contractSigned:  !!p.contractSigned,
+    // 수령인 원본 필드도 그대로 노출 (StoreTransactionDetail 호환)
+    toRecipientName:        p.toRecipientName,
+    toRecipientInitial:     p.toRecipientInitial,
+    toRecipientAvatarBg:    p.toRecipientAvatarBg,
+    toRecipientAvatarFg:    p.toRecipientAvatarFg,
+    toRecipientIsBusiness:  !!p.toRecipientIsBusiness,
+    toRecipientVerified:    !!p.toRecipientVerified,
+    // 메뉴별 메타데이터
+    investMeta:     meta.investMeta   || meta.invest   || null,
+    supportMeta:    meta.supportMeta  || meta.support  || null,
+    rentalMeta:     meta.rentalMeta   || meta.rental   || null,
+    categories:     meta.categories   || null,
+    // 자유 메타 (raw)
+    metadata:       meta,
+    walletId:       p.walletId,
+    walletLabel:    p.walletLabel,
+    payoutNo:       p.payoutNo,
+    payDateMode:    p.payDateMode,
+    scheduledDate:  p.scheduledDate,
+    reason:         p.reason,
+    createdAt:      p.createdAt,
+    requestedAt:    p.requestedAt,
+    completedAt:    p.completedAt,
+    // 메시지 버튼 — 채팅방으로 이동할 때 사용
+    threadId:       p.threadId  || null,
+    threadKey:      p.threadKey || null,
+    _fromServer:    true,
+  }
+}
+
+function fmt(v) { return Number(v || 0).toLocaleString() }
 
 // ─────────────────────────────────────
 // 데이터 (이전 버전 그대로 유지)
@@ -235,7 +405,27 @@ export default function TransactionDetail() {
     return <StoreTransactionDetail id={id} />
   }
 
-  const tx = TX_DETAILS[id]
+  // 서버 UUID 면 GET /api/v1/app/payouts/{id} 로 fetch
+  const isUuid = id && UUID_RE.test(id)
+  const [serverTx, setServerTx] = useState(null)
+  const [serverLoading, setServerLoading] = useState(isUuid && !!session.user)
+  useEffect(() => {
+    if (!isUuid || !session.user) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const p = await getPayout(id)
+        if (!cancelled) setServerTx(adaptServerPayoutToTx(p))
+      } catch (e) {
+        console.warn('[TransactionDetail] getPayout failed', e?.message)
+      } finally {
+        if (!cancelled) setServerLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [id, isUuid])
+
+  const tx = serverTx || TX_DETAILS[id]
   const [showActionSheet, setShowActionSheet] = useState(null)
   // 집행 취소 다이얼로그 (상대방 서명 대기 상태에서만)
   const [txCancelDialog, setTxCancelDialog] = useState(null) // null | { step:1|2 }
@@ -245,6 +435,16 @@ export default function TransactionDetail() {
   const [txCancelled, setTxCancelled] = useState(false)
 
   if (!tx) {
+    // 서버 fetch 중이면 로딩 표시
+    if (serverLoading) {
+      return (
+        <PhoneShell>
+          <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'0 40px' }}>
+            <div style={{ fontSize:'13px', color: COLORS.t3 }}>거래 정보를 불러오는 중…</div>
+          </div>
+        </PhoneShell>
+      )
+    }
     return (
       <PhoneShell>
         <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'0 40px' }}>
@@ -259,6 +459,15 @@ export default function TransactionDetail() {
   }
 
   const meta = TYPE_META[tx.type] || { emoji:'', label:'' }
+
+  // 메시지 버튼 — 서버 payout 이면 채팅방 직접 이동, 데모면 검색 라우트
+  const goToChat = () => {
+    if (tx.threadId) {
+      navigate(`/chat/${tx.threadId}`)
+    } else {
+      navigate(`/messages?with=${tx.counterparty?.name || ''}`)
+    }
+  }
   const fundColor = FUND_COLORS[tx.type]
   const isReceiver = tx.role === 'receiver'
   const isSender = tx.role === 'sender'
@@ -733,7 +942,7 @@ export default function TransactionDetail() {
               }}>
               거절
             </button>
-            <button onClick={() => navigate(`/messages?with=${tx.counterparty.name}`)}
+            <button onClick={() => goToChat()}
               style={{
                 flex:1, height:'52px',
                 background: COLORS.bgCard, color: COLORS.t2,
@@ -772,7 +981,7 @@ export default function TransactionDetail() {
               }}>
               집행 취소
             </button>
-            <button onClick={() => navigate(`/messages?with=${tx.counterparty.name}`)}
+            <button onClick={() => goToChat()}
               style={{
                 flex:1.4, height:'52px',
                 background: theme.brandDark, color:'#fff',
@@ -794,7 +1003,7 @@ export default function TransactionDetail() {
         )}
 
         {!isWaitingForMySignature && !isWaitingForCounterpartySignature && (
-          <button onClick={() => navigate(`/messages?with=${tx.counterparty.name}`)}
+          <button onClick={() => goToChat()}
             style={{
               width:'100%', height:'52px',
               background: theme.brandDark, color:'#fff',
@@ -997,7 +1206,7 @@ export default function TransactionDetail() {
                   협상 요청은 메시지로 전달되며, 송신자가 조건을 수정해서 다시 보낼 수 있어요. 자금은 그대로 보관됩니다.
                 </div>
 
-                <button onClick={() => { setShowActionSheet(null); navigate(`/messages?with=${tx.counterparty.name}`) }}
+                <button onClick={() => { setShowActionSheet(null); goToChat() }}
                   style={{
                     width:'100%', height:'52px',
                     background: theme.brandDark, color:'#fff',

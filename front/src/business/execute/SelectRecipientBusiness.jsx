@@ -138,6 +138,18 @@ function RecipientCard({ recipient, selected, onClick, multi, currentRole, t, th
 // ─────────────────────────────────────────────────────────
 // 새로 추가 바텀시트
 // ─────────────────────────────────────────────────────────
+// 010 휴대폰 입력 → 010-XXXX-XXXX 자동 포맷.
+//   3자리 이하: 그대로
+//   4~7자리: 010-XXXX
+//   8~11자리: 010-XXXX-XXXX
+//   숫자만 허용, 최대 11자리.
+function formatPhone(raw) {
+  const digits = (raw || '').replace(/\D/g, '').slice(0, 11)
+  if (digits.length <= 3) return digits
+  if (digits.length <= 7) return `${digits.slice(0,3)}-${digits.slice(3)}`
+  return `${digits.slice(0,3)}-${digits.slice(3,7)}-${digits.slice(7)}`
+}
+
 function AddNewSheet({ onClose, onSubmit, t, theme }) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
@@ -208,9 +220,10 @@ function AddNewSheet({ onClose, onSubmit, t, theme }) {
         />
         <input
           type="tel"
+          inputMode="numeric"
           placeholder={t('selectRecipB.addModal.phonePh')}
           value={phone}
-          onChange={(e) => { setPhone(e.target.value); setError('') }}
+          onChange={(e) => { setPhone(formatPhone(e.target.value)); setError('') }}
           style={{
             width:'100%', height:'46px',
             padding:'0 14px',

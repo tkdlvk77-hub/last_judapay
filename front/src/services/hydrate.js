@@ -5,9 +5,12 @@
 //   ✅ /api/v1/app/me                  (현재 사용자 프로필)
 //   ✅ /api/v1/app/wallets/summary     (출금 가능 잔액)
 //   ✅ /api/v1/app/payments            (결제 리스트)
-//   ✅ /api/v1/app/home/pending        (처리 필요 — 현재는 빈 배열)
+//   ✅ /api/v1/app/home/pending        (처리 필요 — payouts 기반 실데이터)
 //   ✅ /api/v1/app/home/blocked-count  (이상 결제 N건 배지)
-//   ❌ alerts / messages               — 서버 미구현 → 데모 유지
+//   ✅ /api/v1/app/home/executing      (집행 상황 — payouts 기반)
+//   ✅ /api/v1/app/alerts/unread-count (알림 배지)
+//   ✅ /api/v1/app/messages/threads    (메시지 스레드)
+//   ✅ /ws (STOMP)                     (실시간 message + alert fanout)
 //
 // 로그인 안 된 상태 (쿠키 없음): no-op → UI 는 데모 데이터로 동작
 //
@@ -18,6 +21,8 @@
 // ─────────────────────────────────────────────────────────
 import { api, session } from './api'
 import { connectRealtime } from './realtime'
+import { refreshUnread } from './unreadStore'
+import { refreshWallets } from './walletStore'   // STOMP 자동 구독 등록 부수효과 포함
 
 /**
  * 앱 부팅 시 호출. 현재는 로그인 여부만 확인하고 이벤트 발행.
@@ -28,6 +33,9 @@ export async function hydrate() {
   try {
     // 실시간 채널 연결 (idempotent — 이미 연결됐으면 재사용)
     connectRealtime()
+    // 미읽음 배지 + 지갑 최신화 (BottomTab/Wallet 즉시 정확)
+    refreshUnread().catch(() => {})
+    refreshWallets().catch(() => {})
     window.dispatchEvent(new CustomEvent('judapay:hydrated', { detail: { ok: true } }))
   } catch (e) {
     console.warn('[hydrate] failed:', e?.message)
@@ -39,11 +47,7 @@ export async function hydrate() {
  *
  * 반환:
  *   {
- *     me:       { userId, userType, role, name, email, phone, ... } | null,
- *     wallet:   { walletId, balance, pendingOut, available, currency } | null,
- *     payments: [Transaction, ...],
- *     pending:  [HomePendingItem, ...],
- *     blocked:  number,
+ *     me, wallet, payments, pending, blocked, executing, unreadAlerts
  *   }
  *
  * 각 호출은 Promise.allSettled 로 격리 — 하나가 실패해도 다른 영역은 그려진다.
@@ -52,22 +56,24 @@ export async function hydrate() {
 export async function hydrateHome() {
   if (!session.user) return null
 
-  const [me, wallet, payments, pending, blocked, executing] = await Promise.allSettled([
+  const [me, wallet, payments, pending, blocked, executing, unread] = await Promise.allSettled([
     api.get('/api/v1/app/me'),
     api.get('/api/v1/app/wallets/summary'),
     api.get('/api/v1/app/payments?page=0&size=10'),
     api.get('/api/v1/app/home/pending'),
     api.get('/api/v1/app/home/blocked-count'),
     api.get('/api/v1/app/home/executing'),
+    api.get('/api/v1/app/alerts/unread-count'),
   ])
 
   const result = {
-    me:        me.status       === 'fulfilled' ? me.value       : null,
-    wallet:    wallet.status   === 'fulfilled' ? wallet.value   : null,
-    payments:  payments.status === 'fulfilled' ? (payments.value?.content || payments.value || []) : [],
-    pending:   pending.status  === 'fulfilled' ? (pending.value || []) : [],
-    blocked:   blocked.status  === 'fulfilled' ? Number(blocked.value?.count || 0) : 0,
-    executing: executing.status === 'fulfilled' ? (executing.value || []) : [],
+    me:           me.status        === 'fulfilled' ? me.value        : null,
+    wallet:       wallet.status    === 'fulfilled' ? wallet.value    : null,
+    payments:     payments.status  === 'fulfilled' ? (payments.value?.content || payments.value || []) : [],
+    pending:      pending.status   === 'fulfilled' ? (pending.value || []) : [],
+    blocked:      blocked.status   === 'fulfilled' ? Number(blocked.value?.count || 0) : 0,
+    executing:    executing.status === 'fulfilled' ? (executing.value || []) : [],
+    unreadAlerts: unread.status    === 'fulfilled' ? Number(unread.value?.count || 0) : 0,
   }
 
   // me 의 최신값이 있으면 session 도 갱신 (이름 변경 등 반영)
