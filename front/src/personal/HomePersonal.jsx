@@ -93,7 +93,9 @@ function mapServerPendingToCard(p) {
     desc:         p.actionLabel || p.dealTitle || p.typeLabel || '',
     amount:       p.amount ? `${fmt(p.amount)}원` : null,
     urgent:       p.status === 'waiting' || p.status === 'rejected',
-    threadId:     p.threadId || p.id,
+    // 서버가 threadId 를 직접 보내준다 (AppHomeController.baseItemOf).
+    //   payoutId 폴백 금지 — payoutId 는 thread 가 아니므로 /chat/{uuid} 에서 못 찾는다.
+    threadId:     p.threadId || null,
     viewerRole:   p.viewerRole || 'sender',
     _payoutId:    p.id,
   }
@@ -438,7 +440,16 @@ export default function HomePersonal() {
               const cs = CATEGORY_STYLE[item.category] || { bg:'#F3F4F6', color:'#374151', border:'#E5E7EB', dot:'#9CA3AF' }
               return (
                 <button key={item.id}
-                  onClick={() => item.threadId ? navigate(`/chat/${item.threadId}`) : navigate('/payment-alerts')}
+                  onClick={() => {
+                    // 우선순위: 메시지 스레드 → 거래 상세 → 결제 알림 목록
+                    if (item.threadId) {
+                      navigate(`/chat/${item.threadId}`)
+                    } else if (item._payoutId) {
+                      navigate(`/transactions/${item._payoutId}`)
+                    } else {
+                      navigate('/payment-alerts')
+                    }
+                  }}
                   style={{ width:'100%', padding:'12px 16px', background:'transparent', border:'none',
                     borderTop: i===0 ? 'none' : '1px solid #F0F1F3',
                     display:'flex', alignItems:'center', gap:'12px', cursor:'pointer', fontFamily:'inherit', textAlign:'left' }}>
