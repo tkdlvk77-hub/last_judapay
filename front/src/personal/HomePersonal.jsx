@@ -352,7 +352,7 @@ export default function HomePersonal() {
         />
         <BalanceCard
           label="출금 가능 잔액"
-          amount={balance != null ? Number(balance).toLocaleString('ko-KR') : '1,250,000'}
+          amount={balance != null ? Number(balance).toLocaleString('ko-KR') : '0'}
           onClick={() => navigate('/wallet')}
           sub={
             <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
@@ -372,8 +372,8 @@ export default function HomePersonal() {
             </span>
           }
           secondary={
-            <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', color:'#34D399', fontWeight:600 }}>
-              <TrendIcon /> +3.2%
+            <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', color:'rgba(255,255,255,0.55)', fontWeight:600 }}>
+              <TrendIcon /> 0%
             </span>
           }
           action={
