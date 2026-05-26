@@ -3,6 +3,22 @@ import { useNavigate } from 'react-router-dom'
 import { PhoneShell } from '../../design/components'
 import { COLORS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
+import { addTransaction } from '../../shared/transactionStore'
+import { session } from '../../services/api'
+import { dialog } from '../../components/Dialog'
+import { ensureStepUp } from '../../components/PinModal'
+
+// 카테고리 → addTransaction 의 type 값 매핑
+const CAT_TO_TYPE = {
+  rent:         'rent',
+  rentlease:    'rentLease',
+  subscription: 'subscription',
+  telecom:      'telecom',
+  utility:      'utility',
+  insurance:    'insurancePremium',
+  tax:          'tax',
+  misc:         'misc',
+}
 
 // ─── 카테고리 정보 ─────────────────────────────────────────
 const CATEGORIES = {
@@ -134,6 +150,63 @@ export default function ExecuteAutoPayAll() {
     setEditAutoOn(it.autoOn)
     setSaved(false)
     setScreen('detail')
+  }
+
+  // ── 이번 주 자동지급 항목 일괄 즉시 지급 ──
+  async function handleBulkPayThisWeek() {
+    const me = session.user
+    const targets = items
+      .map(it => ({ ...it, _du: daysUntil(nextPayDate(it.payDay)) }))
+      .filter(it => it.autoOn && it._du <= 7)
+    if (targets.length === 0) {
+      await dialog.alert({ title: '대상 없음', message: '이번 주 자동지급 항목이 없습니다.' })
+      return
+    }
+    const totalAmt = targets.reduce((s, it) => s + it.amount, 0)
+    const ok = await dialog.confirm({
+      title: '이번 주 일괄 지급',
+      message: `${targets.length}건 · 총 ${fmt(totalAmt)}원을 즉시 지급할까요?`,
+      okText: '지급',
+    })
+    if (!ok) return
+    try { await ensureStepUp() } catch { return }
+    try {
+      let issued = 0
+      for (const it of targets) {
+        addTransaction({
+          type:         CAT_TO_TYPE[it.cat] || 'otherExpense',
+          fromUserId:   me?.userId,
+          fromUserName: me?.name || '',
+          fromUserType: 'business',
+          recipient: {
+            userId:     null,
+            phone:      null,
+            name:       it.vendor || '거래처',
+            verified:   true,
+            isBusiness: true,
+          },
+          amount:      it.amount,
+          whtAmount:   0,
+          netAmount:   it.amount,
+          reason:      it.name,
+          walletId:    'my',
+          walletLabel: 'MY 지갑',
+          payDateMode: 'immediate',
+          dealTitle:   it.name,
+          dealDescription: `${it.vendor} · ${it.cycle}`,
+          dealStatus:  'completed',
+          statusLabel: '지급 완료',
+        })
+        issued += 1
+      }
+      await dialog.alert({
+        title: '일괄 지급 요청 완료',
+        message: `${issued}건 · ${fmt(totalAmt)}원 지급 요청을 전송했습니다.`,
+      })
+    } catch (e) {
+      console.warn('[ExecuteAutoPayAll] bulk pay failed', e)
+      await dialog.alert({ title: '지급 실패', message: e?.message || '오류가 발생했습니다.' })
+    }
   }
 
   function handleSave() {
@@ -442,6 +515,26 @@ export default function ExecuteAutoPayAll() {
               )}
             </button>
           </div>
+
+          {/* 이번 주 일괄 지급 CTA */}
+          {canEdit && thisWeekCount > 0 && (
+            <div style={{ margin:'10px 16px 0' }}>
+              <button
+                onClick={handleBulkPayThisWeek}
+                style={{
+                  width:'100%', height:'48px',
+                  background:`linear-gradient(135deg, ${theme.brand}, ${theme.brandDark})`,
+                  color:'#fff', border:'none', borderRadius:'12px',
+                  fontSize:'14px', fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+                  boxShadow:`0 4px 14px ${theme.brand}40`,
+                  display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                }}
+              >
+                <span>이번 주 {thisWeekCount}건 즉시 일괄 지급</span>
+                <span style={{ opacity:0.8 }}>· {fmt(thisWeekAmt)}원</span>
+              </button>
+            </div>
+          )}
 
           {/* 리스트 */}
           <div style={{ padding:'10px 16px 32px', display:'flex', flexDirection:'column', gap:'8px' }}>

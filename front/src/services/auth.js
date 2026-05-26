@@ -68,6 +68,11 @@ export async function logout() {
   try { await api.post('/api/v1/app/auth/logout', {}) } catch {}
   session.clear()
   try { window.dispatchEvent(new Event('judapay:auth')) } catch {}
+  // step-up 캐시 무효화 — 다음 자금집행 시 PIN 재확인
+  try {
+    const { invalidateStepUp } = await import('../components/PinModal')
+    invalidateStepUp()
+  } catch {}
   try {
     const { clearStoredPin } = await import('./biometric')
     await clearStoredPin()

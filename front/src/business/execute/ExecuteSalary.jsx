@@ -6,6 +6,8 @@ import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { addTransaction } from '../../shared/transactionStore'
 import { dialog } from '../../components/Dialog'
+import { ensureStepUp } from '../../components/PinModal'
+import { session } from '../../services/api'
 
 // ─── 상수 ─────────────────────────────────────────────────
 const INCOME_TAX_RATE   = 0.06
@@ -1039,6 +1041,64 @@ export default function ExecuteSalary() {
     dialog.alert({ title: '초대 링크 재발송', message: '유효기간은 72시간입니다.' })
   }
 
+  // ── 차트 단위 일괄 지급 ─────────────────────────────────
+  const handlePayChart = async (chart, e) => {
+    e?.stopPropagation?.()
+    const payableEmps = chart.employees.filter(emp => emp.payable)
+    if (payableEmps.length === 0) {
+      await dialog.alert({ title:'대상 없음', message:'지급 가능한 직원이 없습니다.' })
+      return
+    }
+    const { gross, net } = calcEmployees(chart.employees)
+    const ok = await dialog.confirm({
+      title: `${chart.name} 일괄 지급`,
+      message: `${payableEmps.length}명에게 실수령 합계 ${fmt(net)}원을 지급할까요?`,
+      okText: '지급',
+    })
+    if (!ok) return
+    try { await ensureStepUp() } catch { return }
+
+    const me = session.user
+    let issued = 0
+    for (const emp of payableEmps) {
+      const sal = emp.salary || 0
+      const incomeTax = Math.floor(sal * INCOME_TAX_RATE)
+      const fourInsEmp = Math.floor(sal * FOUR_INS_EMP_RATE)
+      const empNet = sal - incomeTax - fourInsEmp
+      addTransaction({
+        type: 'salary',
+        fromUserId:   me?.userId,
+        fromUserName: me?.name || '',
+        fromUserType: 'business',
+        recipient: {
+          userId:     emp.userId || null,
+          phone:      emp.phone || null,
+          name:       emp.name,
+          verified:   emp.authStatus === 'verified',
+          isBusiness: false,
+        },
+        amount:      sal,
+        whtAmount:   incomeTax + fourInsEmp,
+        netAmount:   empNet,
+        reason:      `${chart.name} ${chart.payDay}일 급여`,
+        walletId:    'my',
+        walletLabel: 'MY 지갑',
+        payDateMode: 'immediate',
+        dealTitle:   `${emp.name} 급여`,
+        dealStatus:  'completed',
+        statusLabel: '지급 완료',
+      })
+      issued += 1
+    }
+    setCharts(prev => prev.map(c => c.id === chart.id
+      ? { ...c, lastPayStatus: 'success', lastPaidAt: new Date().toISOString().slice(0,10) }
+      : c))
+    await dialog.alert({
+      title: '일괄 지급 완료',
+      message: `${issued}명 · 합계 ${fmt(gross)}원 지급 요청을 전송했습니다.`,
+    })
+  }
+
   // ── 리스트용 집계 ──────────────────────────────────────
   const allPayable = charts.flatMap(c => c.employees.filter(e => e.payable))
   const totalGross    = allPayable.reduce((s,e) => s + (e.salary||0), 0)
@@ -1141,9 +1201,22 @@ export default function ExecuteSalary() {
                           <StatusBadge status={computedStatus} />
                         </div>
                       </div>
-                      <div style={{ padding:'8px 16px', background:COLORS.bg, borderTop:`1px solid ${COLORS.borderSoft}`, display:'flex', gap:'16px' }}>
+                      <div style={{ padding:'8px 16px', background:COLORS.bg, borderTop:`1px solid ${COLORS.borderSoft}`, display:'flex', gap:'16px', alignItems:'center' }}>
                         <div style={{ fontSize:'11px', color:COLORS.t4 }}>세전 {fmt(gross)}원</div>
-                        <div style={{ fontSize:'11px', color:COLORS.t4 }}>총 인건비 {fmt(gross+insCo)}원</div>
+                        <div style={{ fontSize:'11px', color:COLORS.t4, flex:1 }}>총 인건비 {fmt(gross+insCo)}원</div>
+                        {canEdit && payable.length > 0 && (
+                          <button
+                            onClick={(e) => handlePayChart(chart, e)}
+                            style={{
+                              padding:'6px 12px', borderRadius:'8px',
+                              background: theme.brandDark, color:'#fff',
+                              border:'none', cursor:'pointer', fontFamily:'inherit',
+                              fontSize:'11px', fontWeight:700,
+                            }}
+                          >
+                            지금 일괄 지급
+                          </button>
+                        )}
                       </div>
                       {isOverdue && (
                         <div style={{ padding:'7px 16px', background:'#FFFBEB', borderTop:'1px solid #FDE68A', display:'flex', alignItems:'center', gap:'6px' }}>

@@ -4,6 +4,7 @@ import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { addTransaction } from '../../shared/transactionStore'
+import { ensureStepUp } from '../../components/PinModal'
 
 const PAY_DAYS = ['1','5','10','15','20','25','28','말일']
 const CYCLE_OPTS = [
@@ -98,8 +99,9 @@ export default function ExecuteMisc() {
   const toggleActive = (id) => setItems(prev => prev.map(i => i.id === id ? { ...i, active: !i.active } : i))
   const handleSave = () => { setSaved(true); setTimeout(() => setSaved(false), 2000) }
 
-  const submit = () => {
+  const submit = async () => {
     if (!form.name || !form.amount || parseInt(form.amount) < 100) return
+    try { await ensureStepUp() } catch { return }   // 사용자 취소면 중단
     setItems(prev => [{
       id: `m${Date.now()}`, icon: selectedIcon,
       name: form.name, amount: parseInt(form.amount),

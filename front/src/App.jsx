@@ -1,6 +1,7 @@
 import { useLocation, useNavigationType } from 'react-router-dom'
 import { useState, useEffect, useRef, memo } from 'react'
 import AppRoutes from './AppRoutes'
+import { dialog } from './components/Dialog'
 
 // location.key 가 같으면 절대 re-render 하지 않음
 // → 스크롤·state·DOM 완전 보존 (keep-alive)
@@ -43,6 +44,25 @@ export default function App() {
 
   const prevKeyRef      = useRef(location.key)
   const prevPathnameRef = useRef(location.pathname)
+
+  // ── 서버 동기화 실패 알림 ────────────────────────────────────
+  //   transactionStore._syncToServer 가 실패하면 'judapay:syncerror' 이벤트 발행.
+  //   여기서 받아 dialog.alert 로 사용자에게 안내. (10초당 동일 code 1회로 throttle 됨)
+  useEffect(() => {
+    const onSyncError = (e) => {
+      const d = e?.detail || {}
+      const title = d.code === 'MFA_REQUIRED' ? '인증이 필요합니다'
+                  : d.code === 'NETWORK'      ? '서버 연결 실패'
+                  : '서버 저장 실패'
+      dialog.alert({
+        title,
+        message: d.message || '자금집행 내역이 서버에 저장되지 않았어요.',
+        okText: '확인',
+      })
+    }
+    window.addEventListener('judapay:syncerror', onSyncError)
+    return () => window.removeEventListener('judapay:syncerror', onSyncError)
+  }, [])
 
   // ── location 변화 → stack 업데이트 ───────────────────────────────
   useEffect(() => {

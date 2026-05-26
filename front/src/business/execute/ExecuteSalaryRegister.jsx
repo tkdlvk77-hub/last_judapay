@@ -6,6 +6,9 @@ import { getAccountTheme } from '../../design/accountTokens'
 import DarkHeader from '../../components/DarkHeader'
 import { useT } from '../../design/i18n'
 import { dialog } from '../../components/Dialog'
+import { addTransaction } from '../../shared/transactionStore'
+import { session } from '../../services/api'
+import { ensureStepUp } from '../../components/PinModal'
 
 const FREELANCE_RATE = 0.033  // 3.3%
 
@@ -68,8 +71,51 @@ export default function ExecuteSalaryRegister() {
     return s + calcNet(sal, fields[r.id]?.type)
   }, 0)
 
-  const handleDone = () => {
-    // 등록 완료 → 메인으로 돌아가기
+  const handleDone = async () => {
+    // 등록 완료 + 즉시 급여 지급 — 각 직원별 addTransaction 1건
+    // step-up 한 번 통과하면 5분간 캐시됨 → 직원 N명 모두에게 한 번에 지급 가능.
+    try { await ensureStepUp() } catch { return }
+    const me = session.user
+    const isFreelance = (id) => fields[id]?.type === 'freelance'
+    try {
+      for (const r of recipients) {
+        const sal     = parseInt(fields[r.id]?.salary) || 0
+        if (sal <= 0) continue
+        const freelance = isFreelance(r.id)
+        const net      = calcNet(sal, fields[r.id]?.type)
+        const wht      = sal - net
+        addTransaction({
+          type: freelance ? 'freelance' : 'salary',
+          fromUserId:   me?.userId,
+          fromUserName: me?.name || '',
+          fromUserType: 'business',
+          recipient: {
+            userId:     r.userId || null,
+            phone:      r.phone || null,
+            name:       r.name,
+            verified:   !!r.verified,
+            isBusiness: false,
+          },
+          amount:      sal,
+          whtAmount:   wht,
+          netAmount:   net,
+          reason:      freelance ? '외주 인건비' : `${payDay}일 급여`,
+          walletId:    'my',
+          walletLabel: 'MY 지갑',
+          payDateMode: 'immediate',
+          dealTitle:   `${r.name} ${freelance ? '외주비' : '급여'}`,
+          dealStatus:  'completed',
+          statusLabel: '지급 완료',
+        })
+      }
+      await dialog.alert({
+        title: '급여 지급 완료',
+        message: `${recipients.length}명에게 급여 지급을 요청했습니다.`,
+        okText: '확인',
+      })
+    } catch (e) {
+      console.warn('[ExecuteSalaryRegister] payout failed', e)
+    }
     navigate('/execute/business/operations/salary', { replace: true })
   }
 

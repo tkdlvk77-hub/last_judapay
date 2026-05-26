@@ -4,6 +4,10 @@ import { useStepHistory } from '../../hooks/useStepHistory'
 import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
+import { addTransaction } from '../../shared/transactionStore'
+import { session } from '../../services/api'
+import { dialog } from '../../components/Dialog'
+import { ensureStepUp } from '../../components/PinModal'
 
 // ─── 기관 메타 ─────────────────────────────────────────────
 const AGENCY_META = {
@@ -277,6 +281,67 @@ function InsDetailScreen({ selected, theme, onBack, onClose, onUpdateNotice }) {
             <div style={{ padding:'11px 14px', background: COLORS.infoBg, borderRadius: RADIUS.md, fontSize:'11px', color:'#1E5294', lineHeight:1.65 }}>
               <strong>ⓘ</strong> 승인 절차는 더보기 → 관리자 설정에서 설정 가능합니다.
             </div>
+
+            {/* 지금 납부하기 — addTransaction 으로 즉시 집행 */}
+            {!selected.paid && (
+              <button
+                onClick={async () => {
+                  try { await ensureStepUp() } catch { return }
+                  const me = session.user
+                  try {
+                    addTransaction({
+                      type: 'insurance4',
+                      fromUserId:   me?.userId,
+                      fromUserName: me?.name || '',
+                      fromUserType: 'business',
+                      recipient: {
+                        userId:     null,
+                        phone:      null,
+                        name:       agency.label,           // 건강보험공단/국민연금공단/근로복지공단
+                        verified:   true,
+                        isBusiness: true,
+                      },
+                      amount:      totalAmount,
+                      whtAmount:   0,
+                      netAmount:   totalAmount,
+                      reason:      `${meta.label} ${selected.period}`,
+                      walletId:    'my',
+                      walletLabel: 'MY 지갑',
+                      payDateMode: 'immediate',
+                      dealTitle:   `${meta.label} 납부`,
+                      dealDescription: `${agency.label} · ${selected.paymentNo || ''}`,
+                      dealStatus:  'completed',
+                      statusLabel: '지급 완료',
+                    })
+                    // 로컬도 paid 마킹
+                    onUpdateNotice(selected.id, {
+                      paid: true,
+                      status: 'paid',
+                      paidDate: new Date().toISOString().slice(0, 10),
+                    })
+                    await dialog.alert({
+                      title: '납부 요청 완료',
+                      message: `${meta.label} ${fmt(totalAmount)}원 납부를 요청했습니다.`,
+                      okText: '확인',
+                    })
+                    onBack && onBack()
+                  } catch (e) {
+                    console.warn('[ExecuteInsurance4] pay failed', e)
+                    await dialog.alert({ title: '납부 실패', message: e?.message || '오류가 발생했습니다.' })
+                  }
+                }}
+                style={{
+                  width:'100%', height:'52px',
+                  background: `linear-gradient(135deg, ${theme.brand}, ${theme.brandDark})`,
+                  color:'#fff', border:'none', borderRadius: RADIUS.md,
+                  fontSize:'15px', fontWeight:700,
+                  cursor:'pointer', fontFamily:'inherit',
+                  boxShadow: `0 4px 14px ${theme.brand}40`,
+                }}
+              >
+                지금 납부하기 · {fmt(totalAmount)}원
+              </button>
+            )}
           </div>
         </div>
     </div>

@@ -5,6 +5,7 @@ import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { addTransaction } from '../../shared/transactionStore'
+import { ensureStepUp } from '../../components/PinModal'
 
 const TAX_META = {
   vat:         { icon:'🧾', label:'부가가치세',    color:'#1D4ED8', bg:'#EFF6FF',  border:'#BFDBFE' },
@@ -376,7 +377,10 @@ export default function ExecuteTax() {
     setScreen('detail')
   }
 
-  function handleSave() {
+  async function handleSave() {
+    if (sel && sel.amount > 0) {
+      try { await ensureStepUp() } catch { return }
+    }
     setNotices(prev => prev.map(n => n.id === sel.id
       ? { ...n, autoOn:detailAutoOn }
       : n

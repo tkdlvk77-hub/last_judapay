@@ -5,6 +5,7 @@ import { PhoneShell } from '../../design/components'
 import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { addTransaction } from '../../shared/transactionStore'
+import { ensureStepUp } from '../../components/PinModal'
 
 // ─── 상수 ─────────────────────────────────────────────────
 const PAY_DAYS = ['1','5','10','15','20','25','28','말일']
@@ -755,8 +756,9 @@ export default function ExecuteUtility() {
     setScreen('detail')
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!selectedItem) return
+    try { await ensureStepUp() } catch { return }
     const amtNum = parseInt(editAmount) || 0
     setItems(prev => prev.map(it =>
       it.id === selectedItem.id

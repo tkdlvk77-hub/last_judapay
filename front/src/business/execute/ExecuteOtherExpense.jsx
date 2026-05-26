@@ -5,6 +5,7 @@ import { PhoneShell } from '../../design/components'
 import { COLORS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { addTransaction } from '../../shared/transactionStore'
+import { ensureStepUp } from '../../components/PinModal'
 
 // ─── 상수 ─────────────────────────────────────────────────
 const CYCLES = [
@@ -772,7 +773,8 @@ export default function ExecuteOtherExpense() {
     setSaved(true); setTimeout(() => setSaved(false), 1800)
   }
 
-  function handleAdd() {
+  async function handleAdd() {
+    try { await ensureStepUp() } catch { return }
     const _amtNum = Number(String(addAmount).replace(/,/g,''))||0
     addTransaction({
       type: 'otherExpense',

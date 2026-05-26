@@ -5,6 +5,7 @@ import { PhoneShell } from '../../design/components'
 import { COLORS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { addTransaction } from '../../shared/transactionStore'
+import { ensureStepUp } from '../../components/PinModal'
 
 // ─── 상수 ────────────────────────────────────────────────
 const INS_TYPES = [
@@ -824,7 +825,8 @@ export default function ExecuteInsurancePremium() {
     setScreen('detail')
   }
 
-  function handleSave() {
+  async function handleSave() {
+    try { await ensureStepUp() } catch { return }
     const amtNum = Number(String(editAmount).replace(/,/g,'')) || 0
     const selItem = items.find(i => i.id === selId)
     setItems(prev => prev.map(it => it.id !== selId ? it : {

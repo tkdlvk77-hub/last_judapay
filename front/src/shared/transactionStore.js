@@ -68,6 +68,7 @@ export const TX_TYPE_META = {
   // 개인 자금집행
   gift:             { icon: '🎁', labelKo: '용돈/선물',  labelEn: 'Gift' },
   living:           { icon: '🛒', labelKo: '생활비',     labelEn: 'Living' },
+  // ⚠ deprecated — 'lend' 로 통일됨. 구 데이터(<= V8) 메타 호환용으로만 유지.
   personalLend:     { icon: '💸', labelKo: '빌려주기',   labelEn: 'Lend' },
   realestate:       { icon: '🏠', labelKo: '부동산',     labelEn: 'Real Estate' },
   // 기타 (Misc / OtherExpense)
@@ -428,11 +429,28 @@ export function addTransaction(params) {
   //   주의: addTransaction 은 sync 함수이므로 await 안 함. tx 객체에 _serverPromise 만 첨부.
   try {
     tx._serverPromise = _syncToServer(tx, params).catch(err => {
-      // MFA_REQUIRED / 401 — step-up 안 거친 데모 시나리오. 흔하므로 debug 레벨.
+      // MFA_REQUIRED / 401 — step-up 안 거친 시나리오. 사용자에게 알림.
       if (err?.code === 'MFA_REQUIRED' || err?.status === 401) {
-        console.debug('[transactionStore] server sync skipped (no step-up cookie). Local store only.')
+        console.warn('[transactionStore] sync failed: MFA_REQUIRED — step-up needed before payout')
+        _dispatchSyncError({
+          code:    'MFA_REQUIRED',
+          message: 'PIN 또는 Face ID 인증이 필요합니다. 자금집행 전 인증을 완료해주세요.',
+          tx,
+        })
+      } else if (err?.status === 0 || /Network|fetch/i.test(err?.message || '')) {
+        console.warn('[transactionStore] sync failed: network — server unreachable')
+        _dispatchSyncError({
+          code:    'NETWORK',
+          message: '서버에 연결할 수 없어 자금집행 내역이 서버에 저장되지 않았어요.',
+          tx,
+        })
       } else {
         console.warn('[transactionStore] server sync failed:', err?.code || '', err?.message)
+        _dispatchSyncError({
+          code:    err?.code || 'SYNC_FAILED',
+          message: err?.message || '자금집행을 서버에 저장하는 중 오류가 발생했습니다.',
+          tx,
+        })
       }
     })
   } catch (e) {
@@ -440,6 +458,18 @@ export function addTransaction(params) {
   }
 
   return tx
+}
+
+// ─────────────────────────────────────────────────────────
+// sync 실패 이벤트 디스패치 — throttle (10초당 동일 code 1회)
+// ─────────────────────────────────────────────────────────
+const _syncErrorLast = {}
+function _dispatchSyncError(detail) {
+  const code = detail?.code || 'SYNC_FAILED'
+  const now  = Date.now()
+  if (_syncErrorLast[code] && now - _syncErrorLast[code] < 10000) return
+  _syncErrorLast[code] = now
+  try { window.dispatchEvent(new CustomEvent('judapay:syncerror', { detail })) } catch {}
 }
 
 // ─────────────────────────────────────────────────────────

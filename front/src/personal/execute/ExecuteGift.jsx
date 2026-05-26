@@ -211,7 +211,10 @@ export default function ExecuteGift() {
     }
 
     // ─── 클라 store 갱신 (기존 UI 호환) ───────────────
+    //   ★ _skipServerSync: 위에서 이미 executePayout() 직접 호출 완료.
+    //     store 가 다시 _syncToServer → executePayout 부르면 서버에 중복 INSERT 발생.
     addTransaction({
+      _skipServerSync: true,
       type: 'gift',
       fromUserId: me?.userId || 'me_juda_kim',
       fromUserName: me?.name || '김주다',

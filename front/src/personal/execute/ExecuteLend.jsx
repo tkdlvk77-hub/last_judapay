@@ -225,7 +225,7 @@ export default function ExecuteLend() {
     const dealDescription = `상환일 ${repaymentDate} · ${isLump ? '일시 상환' : '매월 이자 + 만기 원금'}${hasInterest ? ` · 연 ${rateNum}%` : ' · 무이자'}`
 
     addTransaction({
-      type: 'personalLend',
+      type: 'lend',          // 사업자 ExecuteLendBusiness 와 통일 — 빌려주기 거래
       fromUserId: 'me_juda_kim',
       fromUserName: '김주다',
       fromUserType: 'personal',

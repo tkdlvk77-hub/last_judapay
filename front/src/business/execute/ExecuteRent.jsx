@@ -6,6 +6,7 @@ import { COLORS, RADIUS, SHADOWS } from '../../design/tokens'
 import { getAccountTheme } from '../../design/accountTokens'
 import { useT } from '../../design/i18n'
 import { useStoreData } from '../../hooks/useStoreData'
+import { ensureStepUp } from '../../components/PinModal'
 import {
   addTransaction,
   getDiscoveredRentDeals,
@@ -834,8 +835,9 @@ export default function ExecuteRent() {
     setTimeout(() => setScreen('list'), 800)
   }
 
-  const handleImmediatePay = () => {
+  const handleImmediatePay = async () => {
     if (!selectedRow) return
+    try { await ensureStepUp() } catch { return }
     const c = calcMonthly(selectedRow)
     addTransaction({
       type: 'rent',
