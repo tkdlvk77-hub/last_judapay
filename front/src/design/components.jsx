@@ -34,7 +34,12 @@ export function GradientHeader({ children, paddingBottom = '24px', bg }) {
     <div className="gradient-header-safe" style={{
       background: bg || GRADIENTS.header,
       paddingBottom,
-      position: 'relative',
+      // sticky: 부모(.phone) 가 scrollable 이 아니어도 첫 flex child 라
+      // 자연스럽게 상단에 고정됨. sticky 는 추가 안전장치.
+      position: 'sticky',
+      top: 0,
+      zIndex: 10,
+      flexShrink: 0,
     }}>
       {children}
     </div>

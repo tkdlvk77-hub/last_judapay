@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useScrollRestore } from '../hooks/useScrollRestore'
-import { usePullToRefresh } from '../hooks/usePullToRefresh'
 import BottomTab from '../components/BottomTab'
 import {
   PhoneShell, GradientHeader, ProfileBadge, BalanceCard, CircleAction, AccountTransition,
 } from '../design/components'
+import { GRADIENTS } from '../design/tokens'
 import { getAccountTheme } from '../design/accountTokens'
 import { useNoSwipeBack } from '../hooks/useNoSwipeBack'
 import { useUser } from '../contexts/UserContext'
@@ -292,11 +292,8 @@ export default function HomePersonal() {
     }
   }, [refreshHome])
 
-  // ── Pull-to-Refresh ─────────────────────────────────────────
-  const handleRefresh = useCallback(async () => {
-    try { await refreshHome() } catch {}
-  }, [refreshHome])
-  const ptr = usePullToRefresh(handleRefresh)
+  // ── Pull-to-Refresh 제거 — 페이지 드래그 차단을 위해 비활성화 ──
+  // 이전 버전에는 usePullToRefresh 가 있었으나, 사용자 요청으로 삭제.
 
   // ── 헤더 '이상 N건' 배지 계산 (서버 값 > 클라 fallback) ──
   const blockedCount = useMemo(() => (
@@ -305,11 +302,8 @@ export default function HomePersonal() {
       : payments.filter(p => p.status === 'blocked').length
   ), [blockedN, payments])
 
-  // useScrollRestore 와 usePullToRefresh 가 같은 div 를 가리키도록 ref 병합
-  const mergedRef = useCallback((node) => {
-    scrollRef.current = node
-    ptr.containerRef.current = node
-  }, [scrollRef, ptr.containerRef])
+  // useScrollRestore 만 사용 (PTR 제거되었으므로 ref 병합 불필요)
+  const mergedRef = scrollRef
 
   // 기업 초대 수락 여부
   const [bizInviteAccepted] = useState(
@@ -330,73 +324,114 @@ export default function HomePersonal() {
 
   return (
     <PhoneShell>
-      {/* ── 고정 헤더 (스크롤되지 않음) ── */}
-      <GradientHeader paddingBottom="16px">
-        <ProfileBadge
-          icon={<PersonalEmoji />}
-          accent="PERSONAL"
-          name={userName}
-          sub={null}
-          onIconClick={bizInviteAccepted ? handleSwitchToBusiness : undefined}
-          iconBadge={bizInviteAccepted}
-          action={
-            blockedCount > 0 ? (
-              <button onClick={() => navigate('/payment-alerts')} style={{ display:'flex', alignItems:'center', gap:'5px', padding:'5px 11px', background:'rgba(239,68,68,0.25)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'20px', cursor:'pointer', fontFamily:'inherit' }}>
-                <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#EF4444' }} />
-                <span style={{ fontSize:'11px', fontWeight:700, color:'#FCA5A5' }}>
-                  이상 {blockedCount}건
-                </span>
-              </button>
-            ) : null
-          }
-        />
-        <BalanceCard
-          label="출금 가능 잔액"
-          amount={balance != null ? Number(balance).toLocaleString('ko-KR') : '0'}
-          onClick={() => navigate('/wallet')}
-          sub={
-            <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
-              <span style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#34D399', display:'inline-block' }} />
-              {permissionWallets.length > 0 ? (
-                <>
-                  받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>
-                    {permissionTotal.toLocaleString('ko-KR')}원
-                  </strong>
-                  <span style={{ color:'rgba(255,255,255,0.55)', marginLeft:'4px' }}>
-                    ({permissionWallets.length}개 지갑)
-                  </span>
-                </>
-              ) : (
-                <>받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>0원</strong></>
-              )}
-            </span>
-          }
-          secondary={
-            <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', color:'rgba(255,255,255,0.55)', fontWeight:600 }}>
-              <TrendIcon /> 0%
-            </span>
-          }
-          action={
-            <button style={{ background:'transparent', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.7)', padding:0 }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
-          }
-        />
-        <div style={{ display:'flex', justifyContent:'space-around', padding:'14px 24px 4px' }}>
-          <CircleAction icon={<PlusIcon />} label="충전" onClick={() => navigate('/charge')} />
-          <CircleAction icon={<ZapIcon />} label="지급집행" active onClick={() => navigate('/execute')} />
-          <CircleAction icon={<CardIcon />} label="카드결제" onClick={() => navigate('/card-payment')} />
-          <CircleAction icon={<ArrowIcon />} label="출금" onClick={() => navigate('/withdraw')} />
-        </div>
-      </GradientHeader>
+      {/* ─────────────────────────────────────────────────────────
+           ★ 연속 그라데이션 트릭 ★
+           Sticky 헤더와 Hero 가 같은 가상 그라데이션(400px)을 공유한다.
+             - 둘 다 backgroundSize: 100% 400px (가상 그라데이션 높이)
+             - 헤더는 position 0 → 그라데이션 상단부 표시
+             - Hero 는 position 0 -HEADER_H → 그라데이션 그 다음 부분 표시
+           → 두 element 가 잘려있어도 시각적으론 ONE continuous gradient.
 
-      {/* ── 스크롤 본문 + Pull-to-Refresh ── */}
-      <div ref={mergedRef} style={{
-        flex:1, overflowY:'auto', position:'relative',
-        overscrollBehavior:'contain',
-      }}>
-        {ptr.indicator}
-        <div style={ptr.contentStyle}>
+           HEADER_H 는 safe-area-inset-top + ProfileBadge 높이 근사값.
+           ─────────────────────────────────────────────────────────── */}
+      {(() => {
+        // CSS calc 로 헤더 높이 계산 (safe area + ProfileBadge ≈ 68px)
+        const HEADER_H = 'calc(max(20px, env(safe-area-inset-top, 20px)) + 68px)'
+        const VIRTUAL_GRAD_H = '400px'
+        const sharedBg = {
+          backgroundImage: theme.headerGrad,
+          backgroundRepeat: 'no-repeat',
+          backgroundSize: `100% ${VIRTUAL_GRAD_H}`,
+          backgroundColor: theme.headerSolid,  // 가상 높이 넘어가면 fallback 단색
+        }
+        return (
+          <>
+            {/* ── 고정 헤더 — ProfileBadge 만 ── */}
+            <div className="gradient-header-safe" style={{
+              ...sharedBg,
+              backgroundPosition: '0 0',
+              position: 'sticky',
+              top: 0,
+              zIndex: 10,
+              flexShrink: 0,
+              paddingBottom: 0,
+            }}>
+              <ProfileBadge
+                icon={<PersonalEmoji />}
+                accent="PERSONAL"
+                name={userName}
+                sub={null}
+                onIconClick={bizInviteAccepted ? handleSwitchToBusiness : undefined}
+                iconBadge={bizInviteAccepted}
+                action={
+                  blockedCount > 0 ? (
+                    <button onClick={() => navigate('/payment-alerts')} style={{ display:'flex', alignItems:'center', gap:'5px', padding:'5px 11px', background:'rgba(239,68,68,0.25)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'20px', cursor:'pointer', fontFamily:'inherit' }}>
+                      <div style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#EF4444' }} />
+                      <span style={{ fontSize:'11px', fontWeight:700, color:'#FCA5A5' }}>
+                        이상 {blockedCount}건
+                      </span>
+                    </button>
+                  ) : null
+                }
+              />
+            </div>
+
+            {/* ── 스크롤 본문 (Pull-to-Refresh 제거됨) ── */}
+            <div ref={mergedRef} style={{
+              flex:1, overflowY:'auto', position:'relative',
+              overscrollBehavior:'contain',
+            }}>
+              <div>
+
+              {/* ── Hero 섹션 — 헤더 그라데이션 이어받기 ──
+                   같은 가상 그라데이션을 공유. backgroundPosition 만 헤더 높이만큼
+                   위로 이동 → 헤더 끝 부분에서 자연스럽게 이어지는 효과. */}
+              <div style={{
+                ...sharedBg,
+                backgroundPosition: `0 calc(-1 * ${HEADER_H})`,
+                paddingBottom: '16px',
+              }}>
+          <BalanceCard
+            label="출금 가능 잔액"
+            amount={balance != null ? Number(balance).toLocaleString('ko-KR') : '0'}
+            onClick={() => navigate('/wallet')}
+            sub={
+              <span style={{ display:'inline-flex', alignItems:'center', gap:'5px' }}>
+                <span style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#34D399', display:'inline-block' }} />
+                {permissionWallets.length > 0 ? (
+                  <>
+                    받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>
+                      {permissionTotal.toLocaleString('ko-KR')}원
+                    </strong>
+                    <span style={{ color:'rgba(255,255,255,0.55)', marginLeft:'4px' }}>
+                      ({permissionWallets.length}개 지갑)
+                    </span>
+                  </>
+                ) : (
+                  <>받은 자금 <strong style={{ color:'#fff', fontWeight:600 }}>0원</strong></>
+                )}
+              </span>
+            }
+            secondary={
+              <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', color:'rgba(255,255,255,0.55)', fontWeight:600 }}>
+                <TrendIcon /> 0%
+              </span>
+            }
+            action={
+              <button style={{ background:'transparent', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.7)', padding:0 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            }
+          />
+          <div style={{ display:'flex', justifyContent:'space-around', padding:'14px 24px 4px' }}>
+            <CircleAction icon={<PlusIcon />} label="충전" onClick={() => navigate('/charge')} />
+            <CircleAction icon={<ZapIcon />} label="지급집행" active onClick={() => navigate('/execute')} />
+            <CircleAction icon={<CardIcon />} label="카드결제" onClick={() => navigate('/card-payment')} />
+            <CircleAction icon={<ArrowIcon />} label="출금" onClick={() => navigate('/withdraw')} />
+          </div>
+        </div>
+        {/* ── /Hero ── */}
+
 
         {/* ── 콘텐츠 ── */}
         {/* p-pulse-ring / p-badge-beat 키프레임은 index.css 에 전역 선언됨
@@ -565,6 +600,9 @@ export default function HomePersonal() {
         </div>
         </div>
       </div>
+          </>
+        )
+      })()}
       <BottomTab />
       <AccountTransition
         visible={transitioning}
