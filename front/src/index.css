@@ -93,7 +93,7 @@ body {
    iOS native 셸은 swipe-back 충돌 방지 위해 App.jsx 에서 zIndex 분기로 차단. */
 
 /* ── 모바일 / Capacitor: 좌우·상하 여백 없이 완전히 꽉 채움 ── */
-@media (max-width: 430px) {
+@media (max-width: 500px) {
   .phone {
     width: 100%;
     box-shadow: none;
@@ -174,7 +174,7 @@ body {
   background: #F4F6FB;
 }
 
-@media (max-width: 430px) {
+@media (max-width: 500px) {
   .phone-stage {
     width: 100%;
     /* ✅ 100svh → 100% : 높이 체인 상속으로 Capacitor 안정화 */
