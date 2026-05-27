@@ -95,6 +95,12 @@ export default function Login() {
   const [phoneLoading, setPhoneLoading] = useState(false)
   const [authDone, setAuthDone] = useState(false)
   const [notRegistered, setNotRegistered] = useState(false)
+  // 1단계 - 인증번호 (SMS) 단계
+  const [codeSent, setCodeSent]         = useState(false)
+  const [code, setCode]                 = useState('')
+  const [codeError, setCodeError]       = useState(null)
+  const [codeLoading, setCodeLoading]   = useState(false)
+  const [resendCountdown, setResendCountdown] = useState(0)
 
   // 2단계 — PIN
   const [pin, setPin] = useState('')
@@ -115,13 +121,19 @@ export default function Login() {
     if (phase === 'pin') {
       setPhase('phone'); setPin(''); setPinError(null)
       setAuthDone(false); setNotRegistered(false); setPhoneError(null)
+      setCodeSent(false); setCode(''); setCodeError(null); setResendCountdown(0)
+      return
+    }
+    if (codeSent) {
+      // 인증번호 입력 화면 → 휴대폰 입력 화면으로
+      setCodeSent(false); setCode(''); setCodeError(null); setResendCountdown(0)
       return
     }
     navigate('/')
   }
 
-  // ── 1단계: 본인인증 ─────────────────────────────────
-  const doVerify = async () => {
+  // ── 1단계: 본인인증 — (1-A) 인증번호 전송 (verify-identity 호출 + UI 전환) ──
+  const doSendCode = async () => {
     setPhoneLoading(true)
     setPhoneError(null)
     setNotRegistered(false)
@@ -133,16 +145,52 @@ export default function Login() {
         setPhoneError('가입된 사용자가 아닙니다.')
         return
       }
-      setIdentity(data)
-      setAuthDone(true)
-      // SignupPersonal 과 동일하게 0.6s 후 다음 단계로 자동 진행
-      setTimeout(() => setPhase('pin'), 600)
+      setIdentity(data)               // CI/DI 등은 보관 (코드 인증 후 사용)
+      setCodeSent(true)               // 인증번호 입력 단계로 전환
+      setCode('')
+      setCodeError(null)
+      setResendCountdown(60)          // 재전송은 60초 후
     } catch (e) {
-      setPhoneError(e?.message || '본인인증에 실패했습니다.')
+      setPhoneError(e?.message || '인증번호 전송에 실패했습니다.')
     } finally {
       setPhoneLoading(false)
     }
   }
+
+  // ── 1단계: 본인인증 — (1-B) 인증번호 검증 ──
+  // 데모: 6자리 숫자면 통과 (실서비스에서는 서버에 코드 검증 API 호출)
+  const doVerifyCode = async () => {
+    if (code.length !== 6) return
+    setCodeLoading(true)
+    setCodeError(null)
+    try {
+      // 짧은 지연으로 검증 중 UX 노출
+      await new Promise(r => setTimeout(r, 400))
+      // 데모: 어떤 6자리 숫자도 통과. 실서비스는 KCB 인증코드 서버 검증.
+      // 잘못된 코드 시뮬레이션 원하면 아래 주석 해제:
+      // if (code !== '123456') { setCodeError('인증번호가 일치하지 않습니다.'); return }
+      setAuthDone(true)
+      // 다음 단계(PIN) 으로 자동 진행
+      setTimeout(() => setPhase('pin'), 600)
+    } catch (e) {
+      setCodeError(e?.message || '인증에 실패했습니다.')
+    } finally {
+      setCodeLoading(false)
+    }
+  }
+
+  // ── 1단계: 본인인증 — (1-C) 인증번호 재전송 ──
+  const doResendCode = async () => {
+    if (resendCountdown > 0 || phoneLoading) return
+    await doSendCode()
+  }
+
+  // 재전송 카운트다운 (1초마다 -1)
+  useEffect(() => {
+    if (resendCountdown <= 0) return
+    const t = setTimeout(() => setResendCountdown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendCountdown])
 
   // ── 2단계: PIN 입력 → 서버 검증 ────────────────────
   const onPinKey = (k) => {
@@ -254,21 +302,23 @@ export default function Login() {
           }}
           placeholder="010-0000-0000"
           inputMode="tel"
-          disabled={phoneLoading || authDone}
+          disabled={phoneLoading || authDone || codeSent}
           autoFocus
         />
 
         {phoneError && <div style={S.err}>{phoneError}</div>}
 
+        {/* ── (1-C) 인증 완료 표시 ─────────────────────── */}
         {authDone && identity && (
           <div style={{ background:'#E6F5EF', borderRadius:'12px', padding:'11px 14px', fontSize:'11px', color:'#085041', marginBottom:'16px' }}>
             ✓ 본인인증 완료 — <strong>{identity.name}</strong>님
           </div>
         )}
 
-        {!authDone && !notRegistered && (
+        {/* ── (1-A) 인증번호 받기 전 안내 ─────────────── */}
+        {!authDone && !notRegistered && !codeSent && (
           <div style={{ background:'#EDF3FA', borderRadius:'12px', padding:'12px 14px', fontSize:'11px', color:'#2D6BB0', lineHeight:'1.65', marginBottom:'18px' }}>
-            아래 버튼을 누르면 KCB 인증이 시작됩니다.<br />인증 완료 후 자동으로 다음 단계로 넘어가요.
+            아래 버튼을 누르면 입력하신 휴대폰 번호로<br />인증번호 6자리가 SMS 로 전송됩니다.
           </div>
         )}
 
@@ -290,24 +340,82 @@ export default function Login() {
               다른 번호로 로그인하기
             </button>
           </>
-        ) : (
+        ) : !codeSent ? (
+          /* ── (1-A) 인증번호 받기 버튼 ───────────────── */
           <button
-            onClick={doVerify}
-            disabled={authDone || phoneLoading || phone.length < 9}
+            onClick={doSendCode}
+            disabled={phoneLoading || phone.length < 9}
             style={{
               width:'100%', height:'52px',
-              background: authDone ? '#E6F5EF' : (phoneLoading ? '#E8E4DC' : '#F2EFE9'),
-              border: authDone ? '1px solid #2A7D5E' : '1px solid #E8E4DC',
-              borderRadius:'14px', fontSize:'14px', fontWeight:'500',
-              color: authDone ? '#2A7D5E' : '#555550',
-              cursor: (authDone || phoneLoading) ? 'default' : 'pointer',
+              background: phoneLoading ? '#E8E4DC' : '#111',
+              border: 'none',
+              borderRadius:'14px', fontSize:'14px', fontWeight:'600',
+              color: '#FAF8F5',
+              cursor: phoneLoading ? 'default' : 'pointer',
               fontFamily:'inherit',
             }}>
-            {phoneLoading ? '인증 중...' : authDone ? '본인인증 완료' : '본인 인증하기'}
+            {phoneLoading ? '전송 중...' : '인증번호 받기'}
           </button>
-        )}
+        ) : !authDone ? (
+          /* ── (1-B) 인증번호 입력 단계 ───────────────── */
+          <>
+            <div style={{ background:'#EDF3FA', borderRadius:'12px', padding:'12px 14px', fontSize:'11px', color:'#2D6BB0', lineHeight:'1.65', marginBottom:'18px' }}>
+              <strong>{phone}</strong> 로<br />인증번호 6자리가 전송되었습니다.
+            </div>
 
-        {!notRegistered && (
+            <div style={S.fieldLabel}>인증번호 (6자리)</div>
+            <input
+              style={{ ...S.fieldInput, marginBottom:'14px', letterSpacing:'4px', textAlign:'center', fontSize:'18px', fontWeight:'600' }}
+              value={code}
+              onChange={e => {
+                const v = e.target.value.replace(/\D/g, '').slice(0, 6)
+                setCode(v)
+                if (codeError) setCodeError(null)
+                // 자동 제출: 6자리 채워지면 즉시 검증
+                if (v.length === 6) setTimeout(() => doVerifyCode(), 200)
+              }}
+              placeholder="• • • • • •"
+              inputMode="numeric"
+              maxLength={6}
+              autoFocus
+              disabled={codeLoading}
+            />
+
+            {codeError && <div style={S.err}>{codeError}</div>}
+
+            <button
+              onClick={doVerifyCode}
+              disabled={code.length !== 6 || codeLoading}
+              style={{
+                width:'100%', height:'52px',
+                background: codeLoading ? '#E8E4DC' : (code.length === 6 ? '#111' : '#E8E4DC'),
+                border: 'none',
+                borderRadius:'14px', fontSize:'14px', fontWeight:'600',
+                color: code.length === 6 && !codeLoading ? '#FAF8F5' : '#9B9990',
+                cursor: code.length === 6 && !codeLoading ? 'pointer' : 'default',
+                fontFamily:'inherit',
+              }}>
+              {codeLoading ? '확인 중...' : '확인'}
+            </button>
+
+            <div style={{ marginTop:'14px', textAlign:'center' }}>
+              <button
+                onClick={doResendCode}
+                disabled={resendCountdown > 0 || phoneLoading}
+                style={{
+                  background:'transparent', border:'none',
+                  color: resendCountdown > 0 ? '#C8C5BE' : '#2D6BB0',
+                  fontSize:'12px', fontWeight:600,
+                  cursor: resendCountdown > 0 ? 'default' : 'pointer',
+                  padding:0,
+                }}>
+                {resendCountdown > 0 ? `인증번호 재전송 (${resendCountdown}초)` : '인증번호 재전송'}
+              </button>
+            </div>
+          </>
+        ) : null}
+
+        {!notRegistered && !codeSent && !authDone && (
           <div style={{ marginTop:'18px', textAlign:'center' }}>
             <span style={{ fontSize:'12px', color:'#9B9990' }}>아직 회원이 아니신가요? </span>
             <button onClick={() => navigate('/signup/personal')}

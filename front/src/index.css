@@ -54,8 +54,9 @@ body {
 /* App 최상위 래퍼 — 현재 App.jsx에서 inline style로 관리 */
 
 .phone {
-  /* 데스크탑 프리뷰: 390px 고정 중앙 정렬 */
-  width: 390px;
+  /* 데스크탑 프리뷰: 최대 390px (작은 창에선 자동 축소) */
+  width: 100%;
+  max-width: 390px;
   height: 100vh;
   height: 100svh;
   background: #F4F6FB;
@@ -65,6 +66,16 @@ body {
   overflow: clip;
   display: flex;
   flex-direction: column;
+}
+
+/* ── 네이티브 셸 (iOS / Android WebView) — 무조건 풀 폭, 그림자 제거 ──
+   미디어쿼리에 의존하지 않으므로 어떤 화면 크기에서도 안전.
+   main.jsx 의 setupNativeShellFlag() 가 <html data-native="true"> 부여. */
+html[data-native="true"] .phone {
+  max-width: 100%;
+  height: 100%;
+  box-shadow: none;
+  background: transparent;
 }
 
 /* ── HomePersonal 처리필요항목 배지 애니메이션 ─────────────────
@@ -96,6 +107,7 @@ body {
 @media (max-width: 500px) {
   .phone {
     width: 100%;
+    max-width: 100%;    /* ✅ 기본 max-width:390 캡 해제 — 모바일에선 풀폭 */
     box-shadow: none;
     /* ✅ 100svh → 100% : html/body/#root 높이 체인에서 정확한 높이 상속
        Capacitor WKWebView 에서 100svh 가 safe area 포함 여부가 기기마다 달라
@@ -163,9 +175,10 @@ body {
 
 /* ── 페이지 전환 무대 ── */
 .phone-stage {
-  /* 데스크탑 프리뷰: 390px 고정 */
+  /* 데스크탑 프리뷰: 최대 390px (작은 창에선 자동 축소) */
   position: relative;
-  width: 390px;
+  width: 100%;
+  max-width: 390px;
   height: 100vh;
   height: 100svh;
   overflow: hidden;
@@ -174,9 +187,17 @@ body {
   background: #F4F6FB;
 }
 
+/* ── 네이티브 셸 — phone-stage 도 풀 폭 ── */
+html[data-native="true"] .phone-stage {
+  max-width: 100%;
+  height: 100%;
+  background: #1A0F3C;
+}
+
 @media (max-width: 500px) {
   .phone-stage {
     width: 100%;
+    max-width: 100%;    /* ✅ 기본 max-width:390 캡 해제 — 모바일에선 풀폭 */
     /* ✅ 100svh → 100% : 높이 체인 상속으로 Capacitor 안정화 */
     height: 100%;
     /* 노치·홈바 safe area 영역 배경 — 앱과 동일 다크 퍼플 */

@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react'
 //   - 로컬 (기본):                   http://localhost:8080
 //   - 원격 서버 (Spring Boot 직접):  VITE_BACKEND_URL=http://192.168.0.143:8080 npm run dev
 //   - 원격 서버 (nginx 경유):        VITE_BACKEND_URL=http://192.168.0.143 npm run dev
+//const BACKEND = process.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const BACKEND = process.env.VITE_BACKEND_URL || 'http://localhost:8080'
 
 export default defineConfig({

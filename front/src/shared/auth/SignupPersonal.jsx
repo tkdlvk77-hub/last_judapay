@@ -7,7 +7,7 @@
 //   2) 출금계좌 — 은행 + 계좌번호 입력
 //   3) → SignupPin 으로 이동 (모든 신원/계좌 정보 location.state 로 전달)
 // ─────────────────────────────────────────────────────────
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStatusBarStyle } from '../../native/useStatusBarStyle'
 import { useGoBack } from '../../hooks/useGoBack'
@@ -68,6 +68,12 @@ export default function SignupPersonal() {
   const [authDone, setAuthDone] = useState(false)
   const [authError, setAuthError] = useState(null)
   const [identity, setIdentity] = useState(null)        // { ci, di, name, phone, verifiedAt }
+  // 1단계 - 인증번호(SMS) 단계
+  const [codeSent, setCodeSent]           = useState(false)
+  const [smsCode, setSmsCode]             = useState('')
+  const [smsCodeError, setSmsCodeError]   = useState(null)
+  const [smsCodeLoading, setSmsCodeLoading] = useState(false)
+  const [smsResendCountdown, setSmsResendCountdown] = useState(0)
 
   // ── 2단계: 출금계좌 ────────────────────────────
   const [bankCode, setBankCode] = useState('088')
@@ -86,36 +92,76 @@ export default function SignupPersonal() {
   useStatusBarStyle('dark')
 
   // 백 버튼: 위저드 중간 단계면 이전 단계, 첫 단계면 라우트 백
+  //   1단계에서 인증번호 입력 중이면 휴대폰 입력으로 되돌림
   const goBack = useGoBack('/')
   const handleBack = () => {
+    if (step === 1 && codeSent) {
+      setCodeSent(false); setSmsCode(''); setSmsCodeError(null); setSmsResendCountdown(0)
+      return
+    }
     if (step > 1) { setStep(step - 1); return }
     goBack()
   }
 
-  // ─── 본인인증 API 호출 ─────────────────────────
-  // 이미 가입된 사용자(isRegistered=true)면 가입을 막고 로그인 안내
+  // ─── (1-A) 인증번호 전송 ─────────────────────
+  // 휴대폰 번호 입력 후 "인증번호 받기" 누르면:
+  //   - verify-identity 호출해서 isRegistered 확인 (이미 가입자면 차단)
+  //   - 미가입자면 codeSent=true 로 인증번호 입력 화면으로 전환
   const [alreadyRegistered, setAlreadyRegistered] = useState(false)
-  const doAuth = async () => {
+  const doSendCode = async () => {
     setAuthLoading(true)
     setAuthError(null)
     setAlreadyRegistered(false)
     try {
       const data = await api.post('/api/v1/app/auth/verify-identity', { phone })
       if (data.isRegistered) {
-        // 가입자 차단
+        // 가입자 차단 — 회원가입 못 함, 로그인 안내
         setAlreadyRegistered(true)
         setAuthError('이미 가입된 사용자입니다.')
         return
       }
       setIdentity(data)
-      setAuthDone(true)
-      setTimeout(() => setStep(2), 600)
+      setCodeSent(true)
+      setSmsCode('')
+      setSmsCodeError(null)
+      setSmsResendCountdown(60)
     } catch (e) {
-      setAuthError(e?.message || '본인인증에 실패했습니다.')
+      setAuthError(e?.message || '인증번호 전송에 실패했습니다.')
     } finally {
       setAuthLoading(false)
     }
   }
+
+  // ─── (1-B) 인증번호 검증 ─────────────────────
+  // 데모: 6자리 숫자면 통과 (실서비스는 KCB 검증 서버 호출)
+  const doVerifyCode = async () => {
+    if (smsCode.length !== 6) return
+    setSmsCodeLoading(true)
+    setSmsCodeError(null)
+    try {
+      await new Promise(r => setTimeout(r, 400))
+      // if (smsCode !== '123456') { setSmsCodeError('인증번호가 일치하지 않습니다.'); return }
+      setAuthDone(true)
+      setTimeout(() => setStep(2), 600)
+    } catch (e) {
+      setSmsCodeError(e?.message || '인증에 실패했습니다.')
+    } finally {
+      setSmsCodeLoading(false)
+    }
+  }
+
+  // ─── (1-C) 인증번호 재전송 ───────────────────
+  const doResendCode = async () => {
+    if (smsResendCountdown > 0 || authLoading) return
+    await doSendCode()
+  }
+
+  // 재전송 카운트다운 (1초마다 -1)
+  useEffect(() => {
+    if (smsResendCountdown <= 0) return
+    const t = setTimeout(() => setSmsResendCountdown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [smsResendCountdown])
 
   // ─── 계좌 인증번호 요청 (1원 송금 mock) ───
   const requestAccountVerify = async () => {
@@ -148,11 +194,19 @@ export default function SignupPersonal() {
       })
       setAccountToken(data.accountToken)
       setAccountSub('verified')
-      // 자동 다음 단계로 진행 0.6s 후
-      setTimeout(() => setStep(3), 600)
+      // 자동 다음 단계로 진행 0.6s 후 — 부수 state 도 함께 정리하여
+      // step 3 진입 후 step 2 잔여 DOM/state 가 남지 않도록 보장
+      setTimeout(() => {
+        // 다음 단계로 이동 전에 step 2 의 모든 부수 state 정리
+        // accountSub 도 'input' 으로 명시 리셋 — codeRequested 잔여 차단
+        setAccountCode('')
+        setAccountError(null)
+        setAccountLoading(false)
+        setAccountSub('input')
+        setStep(3)
+      }, 600)
     } catch (e) {
       setAccountError(e?.message || '인증번호가 일치하지 않습니다.')
-    } finally {
       setAccountLoading(false)
     }
   }
@@ -200,20 +254,22 @@ export default function SignupPersonal() {
               placeholder="010-0000-0000"
               inputMode="numeric"
               maxLength={13}
-              disabled={authLoading || authDone}
+              disabled={authLoading || authDone || codeSent}
             />
 
             {authError && <div style={S.err}>{authError}</div>}
 
+            {/* ── (1-C) 인증 완료 표시 ─────────────────────── */}
             {authDone && identity && (
               <div style={S.noticeSuccess}>
                 ✓ 본인인증 완료 — <strong>{identity.name}</strong>님
               </div>
             )}
 
-            {!authDone && !alreadyRegistered && (
+            {/* ── (1-A) 인증번호 받기 전 안내 ─────────────── */}
+            {!authDone && !alreadyRegistered && !codeSent && (
               <div style={S.noticeInfo}>
-                아래 버튼을 누르면 KCB 인증이 시작됩니다.<br />인증 완료 후 자동으로 다음 단계로 넘어가요.
+                아래 버튼을 누르면 입력하신 휴대폰 번호로<br />인증번호 6자리가 SMS 로 전송됩니다.
               </div>
             )}
 
@@ -235,22 +291,79 @@ export default function SignupPersonal() {
                   다른 번호로 가입하기
                 </button>
               </>
-            ) : (
+            ) : !codeSent ? (
+              /* ── (1-A) 인증번호 받기 버튼 ───────────────── */
               <button
-                onClick={doAuth}
-                disabled={authDone || authLoading || phone.length < 9}
+                onClick={doSendCode}
+                disabled={authLoading || phone.length < 9}
                 style={{
                   width:'100%', height:'52px',
-                  background: authDone ? '#E6F5EF' : (authLoading ? '#E8E4DC' : '#F2EFE9'),
-                  border: authDone ? '1px solid #2A7D5E' : '1px solid #E8E4DC',
-                  borderRadius:'14px', fontSize:'14px', fontWeight:'500',
-                  color: authDone ? '#2A7D5E' : '#555550',
-                  cursor: (authDone || authLoading) ? 'default' : 'pointer',
+                  background: authLoading ? '#E8E4DC' : '#111',
+                  border: 'none',
+                  borderRadius:'14px', fontSize:'14px', fontWeight:'600',
+                  color: '#FAF8F5',
+                  cursor: authLoading ? 'default' : 'pointer',
                   fontFamily:'inherit',
                 }}>
-                {authLoading ? '인증 중...' : authDone ? '본인인증 완료' : '본인 인증하기'}
+                {authLoading ? '전송 중...' : '인증번호 받기'}
               </button>
-            )}
+            ) : !authDone ? (
+              /* ── (1-B) 인증번호 입력 단계 ───────────────── */
+              <>
+                <div style={S.noticeInfo}>
+                  <strong>{phone}</strong> 로<br />인증번호 6자리가 전송되었습니다.
+                </div>
+
+                <div style={S.fieldLabel}>인증번호 (6자리)</div>
+                <input
+                  style={{ ...S.fieldInput, marginBottom:'14px', letterSpacing:'4px', textAlign:'center', fontSize:'18px', fontWeight:'600' }}
+                  value={smsCode}
+                  onChange={e => {
+                    const v = e.target.value.replace(/\D/g, '').slice(0, 6)
+                    setSmsCode(v)
+                    if (smsCodeError) setSmsCodeError(null)
+                    if (v.length === 6) setTimeout(() => doVerifyCode(), 200)
+                  }}
+                  placeholder="• • • • • •"
+                  inputMode="numeric"
+                  maxLength={6}
+                  autoFocus
+                  disabled={smsCodeLoading}
+                />
+
+                {smsCodeError && <div style={S.err}>{smsCodeError}</div>}
+
+                <button
+                  onClick={doVerifyCode}
+                  disabled={smsCode.length !== 6 || smsCodeLoading}
+                  style={{
+                    width:'100%', height:'52px',
+                    background: smsCodeLoading ? '#E8E4DC' : (smsCode.length === 6 ? '#111' : '#E8E4DC'),
+                    border: 'none',
+                    borderRadius:'14px', fontSize:'14px', fontWeight:'600',
+                    color: smsCode.length === 6 && !smsCodeLoading ? '#FAF8F5' : '#9B9990',
+                    cursor: smsCode.length === 6 && !smsCodeLoading ? 'pointer' : 'default',
+                    fontFamily:'inherit',
+                  }}>
+                  {smsCodeLoading ? '확인 중...' : '확인'}
+                </button>
+
+                <div style={{ marginTop:'14px', textAlign:'center' }}>
+                  <button
+                    onClick={doResendCode}
+                    disabled={smsResendCountdown > 0 || authLoading}
+                    style={{
+                      background:'transparent', border:'none',
+                      color: smsResendCountdown > 0 ? '#C8C5BE' : '#2D6BB0',
+                      fontSize:'12px', fontWeight:600,
+                      cursor: smsResendCountdown > 0 ? 'default' : 'pointer',
+                      padding:0,
+                    }}>
+                    {smsResendCountdown > 0 ? `인증번호 재전송 (${smsResendCountdown}초)` : '인증번호 재전송'}
+                  </button>
+                </div>
+              </>
+            ) : null}
           </>
         )}
 
